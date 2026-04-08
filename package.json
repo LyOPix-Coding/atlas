@@ -1,0 +1,21 @@
+{
+  "name": "ai-core",
+  "version": "1.0.0",
+  "description": "AI Core system with input, intent processing, and sandboxed task execution",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node tests/integration.test.js"
+  },
+  "keywords": ["ai", "core", "intent", "execution", "sandbox"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "dotenv": "^16.3.1",
+    "dockerode": "^4.0.0"
+  },
+  "devDependencies": {}
+}
