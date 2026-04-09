@@ -300,7 +300,7 @@ MIT
 
 ## Author
 
-Tanner Ordonez
+Tanner Ordonez (LyOPix)
 
 ## Support
 
