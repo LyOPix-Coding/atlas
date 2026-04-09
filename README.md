@@ -1,4 +1,4 @@
-# AI Core
+# ATLAS AI Core
 
 A self-learning, multi-layer AI system that accepts natural language input, intelligently processes requests, and executes tasks in isolated sandboxes. The system can teach itself new capabilities by generating, validating, and executing custom code.
 
