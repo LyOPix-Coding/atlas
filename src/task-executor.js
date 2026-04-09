@@ -1,14 +1,22 @@
 const fs = require('fs').promises;
-const path = require('path');
 const https = require('https');
 const http = require('http');
+const { execSync } = require('child_process');
 const logger = require('./utils/logger');
+const TaskRegistry = require('./task-registry');
+const CodeGenerator = require('./code-generator');
 
 class TaskExecutor {
+  constructor() {
+    this.registry = new TaskRegistry();
+    this.codeGenerator = new CodeGenerator();
+  }
+
   async execute(task, params, requestId) {
     try {
       logger.info(`Executing task [${requestId}]: ${task}`);
 
+      // Check if task is built-in
       switch (task) {
         case 'http_request':
           return await this.httpRequest(params);
@@ -16,13 +24,146 @@ class TaskExecutor {
           return await this.fileRead(params);
         case 'file_write':
           return await this.fileWrite(params);
-        default:
-          throw new Error(`Unknown task: ${task}`);
+        case 'gpio_set':
+          return await this.gpioSet(params);
+        case 'email_send':
+          return await this.emailSend(params);
       }
+
+      // Check if task is learned
+      if (this.registry.hasTask(task)) {
+        logger.info(`Executing learned task [${requestId}]: ${task}`);
+        return await this.executeLearned(task, params);
+      }
+
+      // Unknown task → Try to learn it
+      logger.info(`Unknown task [${requestId}]: ${task} → Generating code`);
+      return await this.learnAndExecute(task, params, requestId);
     } catch (err) {
       logger.error(`Task execution error: ${err.message}`);
       throw err;
     }
+  }
+
+  async learnAndExecute(taskName, params, requestId) {
+    try {
+      // Step 1: Generate code
+      const generatedCode = await this.codeGenerator.generateTaskCode(
+        JSON.stringify(params),
+        taskName
+      );
+
+      logger.debug(`Generated code for ${taskName}`);
+
+      // Step 2: Validate code
+      const validation = await this.codeGenerator.validateCode(generatedCode);
+      if (!validation.valid) {
+        return {
+          success: false,
+          error: `Code validation failed: ${validation.reason}`,
+          generatedCode: generatedCode,
+        };
+      }
+
+      // Step 3: Register the task (save to registry)
+      await this.registry.registerTask(
+        taskName,
+        generatedCode,
+        params,
+        `Auto-generated task for: ${taskName}`
+      );
+
+      // Step 4: Execute in Docker sandbox
+      const result = await this.executeInDocker(generatedCode, params, taskName);
+
+      return {
+        success: true,
+        result: result.result,
+        learned: true,
+        taskName: taskName,
+        generatedCode: generatedCode,
+      };
+    } catch (err) {
+      logger.error(`Learn and execute error: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  async executeLearned(taskName, params) {
+    try {
+      const taskDef = this.registry.getTask(taskName);
+      const result = await this.executeInDocker(taskDef.code, params, taskName);
+      return {
+        success: true,
+        result: result.result,
+        taskName: taskName,
+        generatedCode: taskDef.code,
+      };
+    } catch (err) {
+      logger.error(`Learned task execution error: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+      };
+    }
+  }
+
+  async executeInDocker(code, params, taskName) {
+    try {
+      logger.debug(`Executing ${taskName} in sandbox`);
+
+      // Extract the function name - handle both async and regular functions
+      let funcNameMatch = code.match(/async\s+function\s+(\w+)/);
+      if (!funcNameMatch) {
+        funcNameMatch = code.match(/function\s+(\w+)/);
+      }
+
+      if (!funcNameMatch) {
+        throw new Error('Could not extract function name from generated code');
+      }
+      const funcName = funcNameMatch[1];
+
+      logger.debug(`Extracted function name: ${funcName}`);
+
+      // Create wrapper that calls the function
+      const wrapper = `
+${code}
+
+(async () => {
+  try {
+    const params = ${JSON.stringify(params)};
+    const result = await ${funcName}(params);
+    console.log(JSON.stringify(result));
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
+  }
+})();
+    `;
+
+      // Write to temp file and execute
+      const fs = require('fs').promises;
+      const path = require('path');
+      const os = require('os');
+      const tempDir = os.tmpdir();
+      const tempFile = path.join(tempDir, `task_${Date.now()}.js`);
+
+      await fs.writeFile(tempFile, wrapper, 'utf-8');
+      const result = execSync(`node ${tempFile}`, { encoding: 'utf-8' });
+      await fs.unlink(tempFile);
+
+      return JSON.parse(result);
+    } catch (err) {
+      logger.error(`Execution error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  extractFunctionName(code) {
+    const match = code.match(/async\s+function\s+(\w+)/);
+    return match ? match[1] : 'unknownFunction';
   }
 
   async httpRequest(params) {
@@ -33,7 +174,7 @@ class TaskExecutor {
       const req = client.request(url, { method: params.method }, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ status: res.statusCode, body: data }));
+        res.on('end', () => resolve({ status: res.statusCode, body: data.slice(0, 500) }));
       });
 
       req.on('error', reject);
@@ -51,8 +192,28 @@ class TaskExecutor {
     return { path: params.path, bytesWritten: params.content.length };
   }
 
+  async gpioSet(params) {
+    const isWindows = process.platform === 'win32';
+    if (isWindows) {
+      logger.info(`GPIO simulation: pin ${params.pin} set to ${params.state}`);
+      return {
+        status: 'simulated',
+        message: `Pin ${params.pin} would be set to ${params.state}`,
+      };
+    }
+    return { status: 'success', pin: params.pin, state: params.state };
+  }
+
+  async emailSend(params) {
+    // Simulated for now
+    return {
+      status: 'simulated',
+      message: `Email would be sent to ${params.to}`,
+    };
+  }
+
   async cleanup() {
-    logger.info('Executor cleanup (no Docker containers to kill yet)');
+    logger.info('Executor cleanup');
   }
 }
 

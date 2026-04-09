@@ -1,10 +1,13 @@
 const logger = require('./utils/logger');
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 
 class InputLayer {
   constructor(app, intentProcessor, taskExecutor) {
     this.app = app;
     this.intentProcessor = intentProcessor;
     this.taskExecutor = taskExecutor;
+    this.ollamaUrl = 'http://localhost:11434/api/generate';
     this.setupRoutes();
   }
 
@@ -17,7 +20,8 @@ class InputLayer {
     // Main input endpoint
     this.app.post('/request', async (req, res) => {
       try {
-        const { input, requestId } = req.body;
+        const { input, requestId: clientRequestId } = req.body;
+        const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
 
         if (!input) {
           return res.status(400).json({ error: 'Missing "input" field' });
@@ -25,7 +29,22 @@ class InputLayer {
 
         logger.info(`Received request [${requestId}]: ${input}`);
 
-        // Pass to Intent Processing Layer
+        // Check if it's a simple question or a command
+        const isSimpleQuestion = this.isSimpleQuestion(input);
+
+        if (isSimpleQuestion) {
+          logger.debug(`Routing to Ollama for question: ${input}`);
+          const ollamaResult = await this.askOllama(input);
+          return res.json({
+            status: 'completed',
+            requestId,
+            type: 'question',
+            result: ollamaResult,
+          });
+        }
+
+        // Otherwise, it's a command → Intent Processing
+        logger.debug(`Routing to Intent Processing for command: ${input}`);
         const intentResult = await this.intentProcessor.process(input, requestId);
 
         if (!intentResult.approved) {
@@ -47,6 +66,7 @@ class InputLayer {
         res.json({
           status: 'completed',
           requestId,
+          type: 'command',
           result: taskResult,
         });
       } catch (err) {
@@ -54,6 +74,47 @@ class InputLayer {
         res.status(500).json({ error: 'Internal server error' });
       }
     });
+  }
+
+  isSimpleQuestion(input) {
+    const lowerInput = input.toLowerCase();
+    const questionKeywords = [
+      'what is',
+      'what\'s',
+      'who is',
+      'when is',
+      'where is',
+      'how do',
+      'why',
+      'explain',
+      'tell me',
+      'weather',
+      'capital',
+      'population',
+      'definition',
+      '?',
+      'math',
+      'calculate',
+    ];
+    return questionKeywords.some((kw) => lowerInput.includes(kw));
+  }
+
+  async askOllama(question) {
+    try {
+      logger.debug(`Calling Ollama with: ${question}`);
+      
+      const { execSync } = require('child_process');
+      const command = `ollama run orca-mini ${JSON.stringify(question)}`;
+      const answer = execSync(command, { encoding: 'utf-8' });
+      
+      logger.debug(`Ollama response: ${answer.slice(0, 100)}...`);
+      return { answer };
+    } catch (err) {
+      logger.error(`Ollama error: ${err.message}`);
+      return {
+        answer: `I encountered an error: ${err.message}. Make sure Ollama is installed.`,
+      };
+    }
   }
 }
 
