@@ -300,7 +300,7 @@ MIT
 
 ## Author
 
-Tanner
+Tanner Ordonez
 
 ## Support
 
