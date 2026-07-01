@@ -1,0 +1,12 @@
+{
+  "reverse_string": {
+    "name": "reverse_string",
+    "code": "function execute_reverse_string(params) {\n    if (typeof params !== 'object' || !params.input || typeof params.input \u001b[K\n!== 'string') {\n        return { success: false, error: \"Invalid input\" };\n    }\n    const reversed = params.input.split('').reverse().join('');\n    return { success: true, result: reversed };\n}",
+    "params": {
+      "input": "reverse the string hello"
+    },
+    "description": "The function `execute_reverse_string` takes an object with a property `inpu\u001b[5D\u001b[K\n`input` containing a string and returns an object indicating whether the op\u001b[2D\u001b[K\noperation was successful or not. I",
+    "tags": [],
+    "createdAt": "2026-04-10T17:32:19.813Z"
+  }
+}

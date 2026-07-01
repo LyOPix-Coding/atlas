@@ -33,12 +33,13 @@ class TaskRegistry {
     return this.tasks[taskName];
   }
 
-  async registerTask(taskName, code, params, description) {
+  async registerTask(taskName, code, params, description, tags) {
     this.tasks[taskName] = {
       name: taskName,
       code: code,
       params: params,
       description: description,
+      tags: tags,
       createdAt: new Date().toISOString(),
     };
     await this.saveRegistry();

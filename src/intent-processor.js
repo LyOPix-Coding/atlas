@@ -1,6 +1,11 @@
+const TaskRegistry = require('./task-registry');
 const logger = require('./utils/logger');
 
 class IntentProcessor {
+  constructor() {
+    this.registry = new TaskRegistry();
+  }
+
   async process(input, requestId) {
     try {
       logger.debug(`Processing intent: ${input}`);
@@ -124,6 +129,20 @@ class IntentProcessor {
           body: this.extractBody(input),
         },
       };
+    }
+
+    this.registry.loadRegistry();
+    if (Object.keys(this.registry.tasks).length > 0) {
+      for (const [name, contents] of Object.entries(this.registry.tasks)) {
+        if (contents.tags && contents.tags.some(tag => lower.includes(tag))) {
+          return {
+            task: name,
+            params: {
+              input: input,
+            },
+          };
+        }
+      }
     }
 
     return {
