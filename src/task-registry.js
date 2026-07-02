@@ -53,6 +53,12 @@ class TaskRegistry {
   listTasks() {
     return Object.keys(this.tasks);
   }
+
+  async clearAll() {
+    this.tasks = {};
+    await this.saveRegistry();
+    logger.info('Cleared all created (learned) programs');
+  }
 }
 
 module.exports = TaskRegistry;

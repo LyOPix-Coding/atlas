@@ -1,12 +1,1 @@
-{
-  "multiply": {
-    "name": "multiply",
-    "code": "function execute_multiply(params) {\n    if (typeof params !== 'object' || params === null) {\n        return { success: false, error: 'Invalid params' };\n    }\n    const { a, b } = params;\n    if (typeof a !== 'number' || typeof b !== 'number') {\n        return { success: false, error: 'Missing or invalid a or b' };\n    }\n    const result = a * b;\n    return { success: true, result };\n}",
-    "params": {
-      "a": 3,
-      "b": 8
-    },
-    "description": "Auto-generated task for: multiply",
-    "createdAt": "2026-07-02T20:43:10.818Z"
-  }
-}
+{}

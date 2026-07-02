@@ -3,6 +3,9 @@ const { Ollama } = require('ollama');
 const { v4: uuidv4 } = require('uuid');
 const config = require('./utils/config');
 const { SYSTEM_IDENTITY } = require('./utils/identity');
+const conversationStore = require('./utils/conversation-store');
+const ollamaUsage = require('./utils/ollama-usage');
+const savedPrompts = require('./utils/saved-prompts');
 
 // Tool schemas the model can choose to call during askOllama's chat loop.
 const WEB_TOOLS = [
@@ -94,59 +97,66 @@ class InputLayer {
     this.app.post('/request', async (req, res) => {
       try {
         const { input, requestId: clientRequestId } = req.body;
-        const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
-
-        if (!input) {
-          return res.status(400).json({ error: 'Missing "input" field' });
-        }
-
-        logger.info(`Received request [${requestId}]: ${input}`);
-
-        // Check if it's a simple question or a command
-        const isSimpleQuestion = await this.classifyInput(input, requestId);
-
-        if (isSimpleQuestion) {
-          logger.debug(`Routing to Ollama for question: ${input}`);
-          const ollamaResult = await this.askOllama(input, requestId);
-          return res.json({
-            status: 'completed',
-            requestId,
-            type: 'question',
-            result: ollamaResult,
-          });
-        }
-
-        // Otherwise, it's a command → Intent Processing
-        logger.debug(`Routing to Intent Processing for command: ${input}`);
-        const intentResult = await this.intentProcessor.process(input, requestId);
-
-        if (!intentResult.approved) {
-          logger.warn(`Request [${requestId}] rejected: ${intentResult.reason}`);
-          return res.status(403).json({
-            status: 'rejected',
-            reason: intentResult.reason,
-            requestId,
-          });
-        }
-
-        // If approved, execute task
-        const taskResult = await this.taskExecutor.execute(
-          intentResult.task,
-          intentResult.params,
-          requestId
-        );
-
-        res.json({
-          status: 'completed',
-          requestId,
-          type: 'command',
-          result: taskResult,
-        });
+        const { httpStatus, body } = await this.handleRequest(input, clientRequestId);
+        res.status(httpStatus).json(body);
       } catch (err) {
         logger.error(`Error in /request: ${err.message}`);
         res.status(500).json({ error: 'Internal server error' });
       }
     });
+  }
+
+  // Core routing logic, shared by the HTTP route and the CLI menu.
+  async handleRequest(input, clientRequestId) {
+    const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
+
+    if (!input) {
+      return { httpStatus: 400, body: { error: 'Missing "input" field' } };
+    }
+
+    logger.info(`Received request [${requestId}]: ${input}`);
+
+    // An existing requestId with saved history means the user is continuing
+    // a prior chat — skip reclassification and stay on the question path.
+    const isContinuation = !!conversationStore.get(requestId);
+    savedPrompts.record(requestId, input, !isContinuation);
+
+    const isSimpleQuestion = isContinuation
+      ? true
+      : await this.classifyInput(input, requestId);
+
+    if (isSimpleQuestion) {
+      logger.debug(`Routing to Ollama for question: ${input}`);
+      const ollamaResult = await this.askOllama(input, requestId);
+      return {
+        httpStatus: 200,
+        body: { status: 'completed', requestId, type: 'question', result: ollamaResult },
+      };
+    }
+
+    // Otherwise, it's a command → Intent Processing
+    logger.debug(`Routing to Intent Processing for command: ${input}`);
+    const intentResult = await this.intentProcessor.process(input, requestId);
+
+    if (!intentResult.approved) {
+      logger.warn(`Request [${requestId}] rejected: ${intentResult.reason}`);
+      return {
+        httpStatus: 403,
+        body: { status: 'rejected', reason: intentResult.reason, requestId },
+      };
+    }
+
+    // If approved, execute task
+    const taskResult = await this.taskExecutor.execute(
+      intentResult.task,
+      intentResult.params,
+      requestId
+    );
+
+    return {
+      httpStatus: 200,
+      body: { status: 'completed', requestId, type: 'command', result: taskResult },
+    };
   }
 
   // Routing decision: fast-path on unambiguous keyword matches, otherwise ask the model.
@@ -173,6 +183,20 @@ class InputLayer {
     return await this.classifyWithModel(input, requestId);
   }
 
+  // Wraps this.ollama.chat() so every call gets logged to the Ollama call
+  // history and its token usage counted toward the tracked total.
+  async callOllama(params, purpose, requestId) {
+    const response = await this.ollama.chat(params);
+    ollamaUsage.record({
+      purpose,
+      requestId,
+      model: params.model,
+      promptTokens: response.prompt_eval_count || 0,
+      completionTokens: response.eval_count || 0,
+    });
+    return response;
+  }
+
   async classifyWithModel(input, requestId) {
     try {
       const prompt = `Classify the following user input as exactly one of two categories:
@@ -184,10 +208,11 @@ User input: "${input}"
 
 Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
 
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
-        messages: [{ role: 'user', content: prompt }],
-      });
+      const response = await this.callOllama(
+        { model: config.ollamaModel, messages: [{ role: 'user', content: prompt }] },
+        'classify',
+        requestId
+      );
 
       const raw = response.message.content.trim().toUpperCase();
 
@@ -234,17 +259,31 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
 
   async askOllama(question, requestId) {
     try {
-      logger.debug(`Calling Ollama Cloud (${config.ollamaModel}) with: ${question}`);
+      const existing = conversationStore.get(requestId);
+      const isContinuation = !!existing;
 
-      const messages = [
-        { role: 'system', content: SYSTEM_IDENTITY },
-        { role: 'user', content: question + ' (give me a short answer, like your speaking from a tts)' },
-      ];
+      logger.debug(
+        isContinuation
+          ? `Continuing conversation [${requestId}] (${existing.length} prior messages) with: ${question}`
+          : `Calling Ollama Cloud (${config.ollamaModel}) with: ${question}`
+      );
+
+      const messages = existing || [{ role: 'system', content: SYSTEM_IDENTITY }];
+
+      messages.push({
+        role: 'user',
+        content: isContinuation
+          ? question
+          : question + ' (give me a short answer, like your speaking from a tts)',
+      });
 
       const answer = await this.chatWithTools(messages, requestId);
 
+      messages.push({ role: 'assistant', content: answer });
+      conversationStore.save(requestId, messages);
+
       logger.debug(`Ollama response: ${answer.slice(0, 100)}...`);
-      return { answer };
+      return { answer, requestId };
     } catch (err) {
       logger.error(`Ollama error: ${err.message}`);
       return {
@@ -257,11 +296,11 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
   // as many times as it needs (up to MAX_TOOL_ITERATIONS) before giving a final answer.
   async chatWithTools(messages, requestId) {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
-        messages,
-        tools: WEB_TOOLS,
-      });
+      const response = await this.callOllama(
+        { model: config.ollamaModel, messages, tools: WEB_TOOLS },
+        'chat',
+        requestId
+      );
 
       const toolCalls = response.message.tool_calls;
 
@@ -285,10 +324,11 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     // Hit the iteration cap while the model still wanted to call tools —
     // force one last answer without giving it the option to call more.
     logger.warn(`Tool loop [${requestId}] hit max iterations (${MAX_TOOL_ITERATIONS}), forcing final answer`);
-    const finalResponse = await this.ollama.chat({
-      model: config.ollamaModel,
-      messages,
-    });
+    const finalResponse = await this.callOllama(
+      { model: config.ollamaModel, messages },
+      'chat-forced-final',
+      requestId
+    );
     return finalResponse.message.content;
   }
 
