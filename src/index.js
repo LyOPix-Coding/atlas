@@ -1,11 +1,11 @@
-const express = require('express');
 const dotenv = require('dotenv');
+dotenv.config();
+
+const express = require('express');
 const InputLayer = require('./input-layer');
 const IntentProcessor = require('./intent-processor');
 const TaskExecutor = require('./task-executor');
 const logger = require('./utils/logger');
-
-dotenv.config();
 
 const app = express();
 app.use(express.json());

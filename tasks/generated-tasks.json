@@ -1,12 +1,12 @@
 {
-  "reverse_string": {
-    "name": "reverse_string",
-    "code": "function execute_reverse_string(params) {\n    if (typeof params !== 'object' || !params.input || typeof params.input \u001b[K\n!== 'string') {\n        return { success: false, error: \"Invalid input\" };\n    }\n    const reversed = params.input.split('').reverse().join('');\n    return { success: true, result: reversed };\n}",
+  "multiply": {
+    "name": "multiply",
+    "code": "function execute_multiply(params) {\n    if (typeof params !== 'object' || params === null) {\n        return { success: false, error: 'Invalid params' };\n    }\n    const { a, b } = params;\n    if (typeof a !== 'number' || typeof b !== 'number') {\n        return { success: false, error: 'Missing or invalid a or b' };\n    }\n    const result = a * b;\n    return { success: true, result };\n}",
     "params": {
-      "input": "reverse the string hello"
+      "a": 3,
+      "b": 8
     },
-    "description": "The function `execute_reverse_string` takes an object with a property `inpu\u001b[5D\u001b[K\n`input` containing a string and returns an object indicating whether the op\u001b[2D\u001b[K\noperation was successful or not. I",
-    "tags": [],
-    "createdAt": "2026-04-10T17:32:19.813Z"
+    "description": "Auto-generated task for: multiply",
+    "createdAt": "2026-07-02T20:43:10.818Z"
   }
 }

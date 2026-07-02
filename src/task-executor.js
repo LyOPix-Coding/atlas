@@ -5,20 +5,20 @@ const { execSync } = require('child_process');
 const logger = require('./utils/logger');
 const TaskRegistry = require('./task-registry');
 const CodeGenerator = require('./code-generator');
+const SelfAwareness = require('./self-awareness');
+const WebSearch = require('./web-search');
 
 class TaskExecutor {
   constructor() {
     this.registry = new TaskRegistry();
     this.codeGenerator = new CodeGenerator();
+    this.selfAwareness = new SelfAwareness();
+    this.webSearch = new WebSearch();
   }
 
-  async execute(task, params, requestId, lt) {
+  async execute(task, params, requestId) {
     try {
       logger.info(`Executing task [${requestId}]: ${task}`);
-
-      // if (lt) {
-      //   return await this.executeLearned(task, params);
-      // }
 
       // Check if task is built-in
       switch (task) {
@@ -32,6 +32,10 @@ class TaskExecutor {
           return await this.gpioSet(params);
         case 'email_send':
           return await this.emailSend(params);
+        case 'self_inspect':
+          return await this.selfAwareness.explainSelf(params.question);
+        case 'web_search':
+          return await this.webSearch.searchAndAnswer(params.query);
       }
 
       // Check if task is learned
@@ -51,33 +55,24 @@ class TaskExecutor {
 
   async learnAndExecute(taskName, params, requestId) {
     try {
-      // Step 1: Generate Name
-      const generatedName = await this.codeGenerator.generateTaskName(
-        JSON.stringify(params)
-      );
+      // Step 0: If the classifier only gave us a generic label (e.g. "unknown"),
+      // ask the model for a real descriptive name first.
+      let resolvedName = taskName;
+      if (!resolvedName || resolvedName === 'unknown') {
+        const rawInput = params && params.input ? params.input : JSON.stringify(params);
+        resolvedName = await this.codeGenerator.generateTaskName(rawInput);
+        logger.info(`Resolved task name [${requestId}]: ${resolvedName}`);
+      }
 
-      // Step 2: Generate Code
+      // Step 1: Generate code
       const generatedCode = await this.codeGenerator.generateTaskCode(
         JSON.stringify(params),
-        generatedName
+        resolvedName
       );
 
-      // Step 3: Generate Description
-      const generatedDescription = await this.codeGenerator.generateTaskDescription(
-        JSON.stringify(params),
-        generatedCode
-      )
+      logger.debug(`Generated code for ${resolvedName}`);
 
-      // Step 4: Generate Tags
-      const generatedTags = await this.codeGenerator.generateTaskTags(
-        JSON.stringify(params),
-        generatedName,
-        generatedCode
-      );
-
-      logger.debug(`Generated code, name, tags, and description for ${taskName}`);
-
-      // Step 3: Validate code
+      // Step 2: Validate code
       const validation = await this.codeGenerator.validateCode(generatedCode);
       if (!validation.valid) {
         return {
@@ -87,23 +82,22 @@ class TaskExecutor {
         };
       }
 
-      // Step 4: Register the task (save to registry)
+      // Step 3: Register the task (save to registry)
       await this.registry.registerTask(
-        generatedName,
+        resolvedName,
         generatedCode,
         params,
-        generatedDescription,
-        generatedTags
+        `Auto-generated task for: ${resolvedName}`
       );
 
-      // Step 5: Execute in Docker sandbox
-      const result = await this.executeInDocker(generatedCode, params, taskName);
+      // Step 4: Execute in Docker sandbox
+      const result = await this.executeInDocker(generatedCode, params, resolvedName);
 
       return {
         success: true,
         result: result.result,
         learned: true,
-        taskName: generatedCode,
+        taskName: resolvedName,
         generatedCode: generatedCode,
       };
     } catch (err) {
@@ -136,16 +130,22 @@ class TaskExecutor {
 
   async executeInDocker(code, params, taskName) {
     try {
-      logger.debug(`Executing ${taskName} in Docker sandbox`);
+      logger.debug(`Executing ${taskName} in sandbox`);
 
-      // Extract function name
-      let funcNameMatch = code.match(/(?:async\s+)?function\s+(\w+)/);
+      // Extract the function name - handle both async and regular functions
+      let funcNameMatch = code.match(/async\s+function\s+(\w+)/);
+      if (!funcNameMatch) {
+        funcNameMatch = code.match(/function\s+(\w+)/);
+      }
+
       if (!funcNameMatch) {
         throw new Error('Could not extract function name from generated code');
       }
       const funcName = funcNameMatch[1];
 
-      // Create wrapper script
+      logger.debug(`Extracted function name: ${funcName}`);
+
+      // Create wrapper that calls the function
       const wrapper = `
 ${code}
 
@@ -160,7 +160,7 @@ ${code}
 })();
     `;
 
-      // Write to temp file
+      // Write to temp file and execute
       const fs = require('fs').promises;
       const path = require('path');
       const os = require('os');
@@ -168,60 +168,12 @@ ${code}
       const tempFile = path.join(tempDir, `task_${Date.now()}.js`);
 
       await fs.writeFile(tempFile, wrapper, 'utf-8');
-      logger.debug(`Created temp file: ${tempFile}`);
+      const result = execSync(`node ${tempFile}`, { encoding: 'utf-8' });
+      await fs.unlink(tempFile);
 
-      // Run in Docker container
-      const { spawn } = require('child_process');
-
-      return new Promise((resolve, reject) => {
-        const docker = spawn('docker', [
-          'run',
-          '--rm',
-          '-v', `${tempFile}:/task/script.js`,
-          'atlas-container:latest',
-          '/task/script.js'
-        ]);
-
-        let output = '';
-        let errorOutput = '';
-
-        docker.stdout.on('data', (data) => {
-          output += data.toString();
-          logger.debug(`Docker stdout: ${data.toString()}`);
-        });
-
-        docker.stderr.on('data', (data) => {
-          errorOutput += data.toString();
-          logger.debug(`Docker stderr: ${data.toString()}`);
-        });
-
-        docker.on('close', async (code) => {
-          try {
-            await fs.unlink(tempFile);
-            logger.debug(`Cleaned up temp file: ${tempFile}`);
-
-            if (code !== 0) {
-              logger.error(`Docker exited with code ${code}: ${errorOutput}`);
-              reject(new Error(`Docker execution failed: ${errorOutput}`));
-              return;
-            }
-
-            const result = JSON.parse(output.trim());
-            logger.debug(`Docker result: ${JSON.stringify(result)}`);
-            resolve(result);
-          } catch (err) {
-            logger.error(`Error processing Docker result: ${err.message}`);
-            reject(err);
-          }
-        });
-
-        docker.on('error', (err) => {
-          logger.error(`Docker spawn error: ${err.message}`);
-          reject(err);
-        });
-      });
+      return JSON.parse(result);
     } catch (err) {
-      logger.error(`Docker execution error: ${err.message}`);
+      logger.error(`Execution error: ${err.message}`);
       throw err;
     }
   }

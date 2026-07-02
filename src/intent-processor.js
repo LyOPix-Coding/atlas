@@ -1,11 +1,6 @@
-const TaskRegistry = require('./task-registry');
 const logger = require('./utils/logger');
 
 class IntentProcessor {
-  constructor() {
-    this.registry = new TaskRegistry();
-  }
-
   async process(input, requestId) {
     try {
       logger.debug(`Processing intent: ${input}`);
@@ -76,6 +71,25 @@ class IntentProcessor {
       };
     }
 
+    // Self-awareness — questions about ATLAS's own code/behavior. Must be checked
+    // before file_read/file_write, since phrases like "read your own code" would
+    // otherwise match the file-operation keywords below.
+    if (this.isSelfInspectionQuery(lower)) {
+      return {
+        task: 'self_inspect',
+        params: { question: input },
+      };
+    }
+
+    // Web search — must come before file_read, since "look up" or "search for"
+    // could otherwise get swept up by loose keyword matches elsewhere.
+    if (this.isWebSearchQuery(lower)) {
+      return {
+        task: 'web_search',
+        params: { query: this.extractSearchQuery(input) },
+      };
+    }
+
     // HTTP requests
     if (lower.includes('fetch') || lower.includes('http') || lower.includes('get') || lower.includes('post')) {
       return {
@@ -131,24 +145,67 @@ class IntentProcessor {
       };
     }
 
-    this.registry.loadRegistry();
-    if (Object.keys(this.registry.tasks).length > 0) {
-      for (const [name, contents] of Object.entries(this.registry.tasks)) {
-        if (contents.tags && contents.tags.some(tag => lower.includes(tag))) {
-          return {
-            task: name,
-            params: {
-              input: input,
-            },
-          };
-        }
-      }
-    }
-
     return {
       task: 'unknown',
       params: { input: input },
     };
+  }
+
+  isSelfInspectionQuery(lower) {
+    const selfPhrases = [
+      'your own code',
+      'your code',
+      'your source',
+      'yourself',
+      'how do you work',
+      'how you work',
+      'what do you do',
+      'explain your',
+      'understand your',
+      'analyze your',
+      'introspect',
+      'your architecture',
+      'how are you built',
+      'what does your',
+    ];
+    return selfPhrases.some((p) => lower.includes(p));
+  }
+
+  isWebSearchQuery(lower) {
+    const searchPhrases = [
+      'search the web',
+      'search online',
+      'search for',
+      'look up',
+      'google ',
+      'find information about',
+      'find out about',
+    ];
+    return searchPhrases.some((p) => lower.includes(p));
+  }
+
+  extractSearchQuery(input) {
+    const stripPhrases = [
+      'search the web for',
+      'search online for',
+      'search the web',
+      'search online',
+      'search for',
+      'look up',
+      'google',
+      'find information about',
+      'find out about',
+    ];
+    let query = input;
+    const lower = input.toLowerCase();
+    for (const phrase of stripPhrases) {
+      const idx = lower.indexOf(phrase);
+      if (idx !== -1) {
+        query = input.slice(idx + phrase.length).trim();
+        break;
+      }
+    }
+    return query || input;
   }
 
   extractMathOperation(input) {

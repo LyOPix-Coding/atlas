@@ -1,65 +1,48 @@
-const axios = require('axios');
+const { Ollama } = require('ollama');
 const logger = require('./utils/logger');
-
-const OLLAMA_URL = 'https://atlas-ollama.onrender.com/api/generate';
+const config = require('./utils/config');
 
 class CodeGenerator {
+  constructor() {
+    this.ollama = new Ollama({
+      host: config.ollamaHost,
+      headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
+    });
+  }
+
   async generateTaskName(input) {
     try {
-      const prompt = `Given this request, generate a short task name (1-2 words, lowercase, no spaces). Respond ONLY with the name.
+      const prompt = `Given this user request: "${input}"
 
-Request: "${input}"
+Generate a short, descriptive task name in snake_case (lowercase, underscores only, no spaces, no punctuation). Examples: reverse_string, count_vowels, sum_array.
 
-Examples:
-"reverse hello" → reverse_string
-"count vowels in beautiful" → count_vowels
-"add 5 and 3" → add_numbers
-"check if palindrome" → check_palindrome
+Respond with ONLY the task name, nothing else:`;
 
-Task name:`;
+      logger.debug(`Generating task name for input: ${input}`);
 
-      logger.debug(`Generating task name for: ${input}`);
-
-      const response = await axios.post(OLLAMA_URL, {
-        model: 'qwen2.5-coder',
-        prompt: prompt,
-        stream: false,
+      const response = await this.ollama.chat({
+        model: config.ollamaModel,
+        messages: [{ role: 'user', content: prompt }],
       });
 
-      const name = response.data.response.toLowerCase().replace(/\s+/g, '_').slice(0, 50);
-      logger.debug(`Generated task name: ${name}`);
+      const raw = response.message.content.trim();
+
+      // Sanitize: lowercase, replace non-alphanumeric with underscores, collapse repeats
+      let name = raw
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 50);
+
+      if (!name) {
+        name = `task_${Date.now()}`;
+      }
+
+      logger.info(`Generated task name: ${name}`);
       return name;
     } catch (err) {
       logger.error(`Task naming error: ${err.message}`);
-      return 'unknown_task';
-    }
-  }
-
-  async generateTaskDescription(input, code) {
-    try {
-      const prompt = `Describe what this function does in 1-2 sentences. Respond ONLY with the description.
-
-Request: "${input}"
-
-Code:
-${code}
-
-Description:`;
-
-      logger.debug(`Generating task description`);
-
-      const response = await axios.post(OLLAMA_URL, {
-        model: 'qwen2.5-coder',
-        prompt: prompt,
-        stream: false,
-      });
-
-      const description = response.data.response.trim();
-      logger.debug(`Generated description: ${description}`);
-      return description.slice(0, 200);
-    } catch (err) {
-      logger.error(`Description generation error: ${err.message}`);
-      return 'Auto-generated task';
+      return `task_${Date.now()}`;
     }
   }
 
@@ -77,20 +60,21 @@ Requirements:
 
 Write ONLY the function code, nothing else:`;
 
-      logger.debug(`Generating code for task: ${task}`);
+      logger.debug(`Generating code for task: ${task} using ${config.ollamaModel}`);
 
-      const response = await axios.post(OLLAMA_URL, {
-        model: 'qwen2.5-coder',
-        prompt: prompt,
-        stream: false,
+      const response = await this.ollama.chat({
+        model: config.ollamaModel,
+        messages: [{ role: 'user', content: prompt }],
       });
 
-      let cleaned = response.data.response
+      const raw = response.message.content.trim();
+
+      logger.debug(`Generated code response: ${raw.slice(0, 300)}`);
+
+      let cleaned = raw
         .replace(/```javascript\n?/g, '')
         .replace(/```\n?/g, '')
         .trim();
-
-      logger.debug(`Generated code response: ${cleaned.slice(0, 300)}`);
 
       let functionMatch = cleaned.match(/(?:async\s+)?function\s+execute_\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
 
@@ -109,37 +93,6 @@ Write ONLY the function code, nothing else:`;
     } catch (err) {
       logger.error(`Code generation error: ${err.message}`);
       throw err;
-    }
-  }
-
-  async generateTaskTags(input, task, code) {
-    try {
-      const prompt = `Generate an array of tags for this function:
-
-Name of function: ${task}
-What the function answers: ${input}
-Code: ${code}
-
-REQUIREMENTS:
-- Only respond with the array (["", "", "", ""])
-- Each tag is a keyword for the function`;
-
-      logger.debug("Generating task tags");
-
-      const response = await axios.post(OLLAMA_URL, {
-        model: 'qwen2.5-coder',
-        prompt: prompt,
-        stream: false,
-      });
-
-      logger.debug("Finished Generating");
-
-      const cleanedResponse = JSON.parse(response.data.response.match(/\[.*\]/s)?.[0] || '[]');
-
-      return cleanedResponse;
-    } catch (err) {
-      logger.error("Task Tags Generation Error: " + err);
-      return [];
     }
   }
 
