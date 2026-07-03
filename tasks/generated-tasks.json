@@ -1,1 +1,11 @@
-{}
+{
+  "say_hello": {
+    "name": "say_hello",
+    "code": "function execute_say_hello(params) {\n  try {\n    const value = { input: \"Hello!\" };\n    return { success: true, result: value };\n  } catch (e) {\n    return { success: false, error: e.message };\n  }\n}",
+    "params": {
+      "input": "Hello!"
+    },
+    "description": "Auto-generated task for: say_hello",
+    "createdAt": "2026-07-03T14:27:22.924Z"
+  }
+}

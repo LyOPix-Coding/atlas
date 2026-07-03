@@ -195,6 +195,11 @@ ${code}
       });
 
       req.on('error', reject);
+
+      if (params.body && (params.method === 'POST' || params.method === 'PUT')) {
+        req.write(params.body);
+      }
+
       req.end();
     });
   }

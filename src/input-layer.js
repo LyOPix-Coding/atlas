@@ -41,6 +41,86 @@ const WEB_TOOLS = [
   },
 ];
 
+const TASK_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'http_request',
+      description: 'Make an HTTP request (GET, POST, PUT, or DELETE) to a URL and return the response status and body.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The URL to request, including protocol (https://...)' },
+          method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'], description: 'HTTP method (default GET)' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'file_read',
+      description: 'Read the contents of a file from the local filesystem.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the file to read' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'file_write',
+      description: 'Write content to a file on the local filesystem, creating or overwriting it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the file to write' },
+          content: { type: 'string', description: 'Content to write' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gpio_set',
+      description: 'Set a GPIO pin (Raspberry Pi) to HIGH or LOW.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pin: { type: 'number', description: 'GPIO pin number' },
+          state: { type: 'string', enum: ['HIGH', 'LOW'], description: 'Desired pin state' },
+        },
+        required: ['pin', 'state'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'email_send',
+      description: 'Send an email to a recipient with a subject and body (currently simulated, not actually delivered).',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject' },
+          body: { type: 'string', description: 'Email body' },
+        },
+        required: ['to'],
+      },
+    },
+  },
+];
+
+const ALL_TOOLS = [...WEB_TOOLS, ...TASK_TOOLS];
+
 const MAX_TOOL_ITERATIONS = 10;
 
 class InputLayer {
@@ -109,6 +189,8 @@ class InputLayer {
   // Core routing logic, shared by the HTTP route and the CLI menu.
   async handleRequest(input, clientRequestId) {
     const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
+
+// TODO:
 
     if (!input) {
       return { httpStatus: 400, body: { error: 'Missing "input" field' } };
@@ -297,7 +379,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
   async chatWithTools(messages, requestId) {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const response = await this.callOllama(
-        { model: config.ollamaModel, messages, tools: WEB_TOOLS },
+        { model: config.ollamaModel, messages, tools: ALL_TOOLS },   // was WEB_TOOLS
         'chat',
         requestId
       );
@@ -336,6 +418,8 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     const name = call.function.name;
     const args = call.function.arguments || {};
 
+    const BUILTIN_TASK_TOOLS = ['http_request', 'file_read', 'file_write', 'gpio_set', 'email_send'];
+
     try {
       if (name === 'web_search') {
         logger.info(`Tool call [${requestId}]: web_search("${args.query}")`);
@@ -354,6 +438,11 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           title: result.title,
           content: (result.content || '').slice(0, 3000),
         };
+      }
+
+      if (BUILTIN_TASK_TOOLS.includes(name)) {
+        logger.info(`Tool call [${requestId}]: ${name}(${JSON.stringify(args)})`);
+        return await this.taskExecutor.execute(name, args, requestId);
       }
 
       logger.warn(`Tool call [${requestId}]: unknown tool "${name}"`);

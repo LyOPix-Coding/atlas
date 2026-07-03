@@ -99,8 +99,13 @@ function printResult(body) {
     return;
   }
 
-  if (body.type === 'question') {
-    console.log(`\n[${body.requestId}] ATLAS: ${body.result && body.result.answer}\n`);
+  // With tool-calling, both "question" and "command" results now come back
+  // as { answer, toolsUsed }, whether or not a tool was actually called.
+  const answer = body.result && body.result.answer;
+  if (answer) {
+    const toolsUsed = (body.result.toolsUsed || []).join(', ');
+    const suffix = toolsUsed ? ` [tools: ${toolsUsed}]` : '';
+    console.log(`\n[${body.requestId}] ATLAS (${body.type})${suffix}: ${answer}\n`);
     return;
   }
 
