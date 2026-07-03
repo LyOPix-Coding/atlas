@@ -24,6 +24,11 @@ const FILE_MANIFEST = [
   { path: 'src/utils/identity.js', description: 'Defines the ATLAS system identity used in prompts' },
   { path: 'README.md', description: 'Project overview, architecture, and usage docs' },
   { path: 'package.json', description: 'Dependencies and npm scripts' },
+  { path: 'src/utils/conversation-store.js', description: 'Stores the conversations into a different file' },
+  { path: 'src/utils/ollama-usage.js', description: 'Stores the amount of calls and tokens used into a different file' },
+  { path: 'src/utils/saved-prompts.js', description: 'Stores the past prompts into a different file' },
+  { path: 'src/cli.js', description: 'Gives a better UX to the user by giving a UI' },
+  { path: 'src/web-search.js', description: 'Searches and fetches pages on the web' },
 ];
 
 class SelfAwareness {
