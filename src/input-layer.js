@@ -119,7 +119,34 @@ const TASK_TOOLS = [
   },
 ];
 
-const ALL_TOOLS = [...WEB_TOOLS, ...TASK_TOOLS];
+const CODE_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'generate_function',
+      description:
+        'Write and run a brand-new JavaScript function to do something none of the other tools cover — custom calculations, string/array/object manipulation, algorithms, data transforms, etc. The function is generated on the fly, validated for safety (no require/fetch/file/network/eval), executed immediately in a sandbox, and saved to the task registry so it can be reused later. Use this whenever the user asks you to write, create, build, or run code/a function/a script to do something specific that the other tools do not already handle.',
+      parameters: {
+        type: 'object',
+        properties: {
+          description: {
+            type: 'string',
+            description:
+              'Clear, specific description of what the function should do, e.g. "reverse a string" or "check if a number is prime".',
+          },
+          params: {
+            type: 'object',
+            description:
+              'Optional input values to pass to the generated function when it runs, as key-value pairs, e.g. { "str": "hello world" }.',
+          },
+        },
+        required: ['description'],
+      },
+    },
+  },
+];
+
+const ALL_TOOLS = [...WEB_TOOLS, ...TASK_TOOLS, ...CODE_TOOLS];
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -359,13 +386,13 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           : question + ' (give me a short answer, like your speaking from a tts)',
       });
 
-      const answer = await this.chatWithTools(messages, requestId);
+      const { answer, toolsUsed } = await this.chatWithTools(messages, requestId);
 
       messages.push({ role: 'assistant', content: answer });
       conversationStore.save(requestId, messages);
 
       logger.debug(`Ollama response: ${answer.slice(0, 100)}...`);
-      return { answer, requestId };
+      return { answer, requestId, toolsUsed };
     } catch (err) {
       logger.error(`Ollama error: ${err.message}`);
       return {
@@ -377,6 +404,8 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
   // Runs the chat/tool-call loop: the model can call web_search / web_fetch
   // as many times as it needs (up to MAX_TOOL_ITERATIONS) before giving a final answer.
   async chatWithTools(messages, requestId) {
+    const toolsUsed = [];
+
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const response = await this.callOllama(
         { model: config.ollamaModel, messages, tools: ALL_TOOLS },   // was WEB_TOOLS
@@ -387,13 +416,14 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       const toolCalls = response.message.tool_calls;
 
       if (!toolCalls || toolCalls.length === 0) {
-        return response.message.content;
+        return { answer: response.message.content, toolsUsed };
       }
 
       // Model wants to use a tool — record its request, then feed back results.
       messages.push(response.message);
 
       for (const call of toolCalls) {
+        toolsUsed.push(call.function.name);
         const result = await this.executeTool(call, requestId);
         messages.push({
           role: 'tool',
@@ -411,7 +441,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       'chat-forced-final',
       requestId
     );
-    return finalResponse.message.content;
+    return { answer: finalResponse.message.content, toolsUsed };
   }
 
   async executeTool(call, requestId) {
@@ -443,6 +473,28 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       if (BUILTIN_TASK_TOOLS.includes(name)) {
         logger.info(`Tool call [${requestId}]: ${name}(${JSON.stringify(args)})`);
         return await this.taskExecutor.execute(name, args, requestId);
+      }
+
+      if (name === 'generate_function') {
+        logger.info(`Tool call [${requestId}]: generate_function("${args.description}")`);
+
+        if (!args.description) {
+          return { success: false, error: 'Missing "description" for generate_function' };
+        }
+
+        // Reuses the existing learn-and-execute pipeline (code gen -> validate ->
+        // register in task registry -> sandboxed execution), same path the
+        // command router falls back to for unrecognized tasks.
+        const taskParams = { input: args.description, ...(args.params || {}) };
+        const result = await this.taskExecutor.execute('unknown', taskParams, requestId);
+
+        return {
+          success: result.success,
+          taskName: result.taskName,
+          result: result.result,
+          error: result.error,
+          generatedCode: result.generatedCode,
+        };
       }
 
       logger.warn(`Tool call [${requestId}]: unknown tool "${name}"`);

@@ -106,6 +106,10 @@ function printResult(body) {
     const toolsUsed = (body.result.toolsUsed || []).join(', ');
     const suffix = toolsUsed ? ` [tools: ${toolsUsed}]` : '';
     console.log(`\n[${body.requestId}] ATLAS (${body.type})${suffix}: ${answer}\n`);
+
+    if ((body.result.toolsUsed || []).includes('generate_function')) {
+      console.log('(generated a new function this turn — check "Clear all created programs" menu or tasks/generated-tasks.json for the saved code)\n');
+    }
     return;
   }
 

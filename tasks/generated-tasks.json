@@ -1,11 +1,20 @@
 {
-  "say_hello": {
-    "name": "say_hello",
-    "code": "function execute_say_hello(params) {\n  try {\n    const value = { input: \"Hello!\" };\n    return { success: true, result: value };\n  } catch (e) {\n    return { success: false, error: e.message };\n  }\n}",
+  "sanitize_js_file": {
+    "name": "sanitize_js_file",
+    "code": "function execute_sanitize_js_file(params) {\n  try {\n    // Validate parameters\n    if (!params || typeof params.filePath !== 'string' || typeof params.fileContent !== 'string') {\n      return { success: false, error: 'params.filePath and params.fileContent are required' };\n    }\n\n    // ---------- Step 1: Trim trailing spaces ----------\n    const trimmedContent = params.fileContent.replace(/[ \\t]+$/gm, '');\n\n    // ---------- Step 2: Add missing semicolons ----------\n    const lines = trimmedContent.split('\\n');\n    const semicolonedLines = lines.map(line => {\n      const trimmed = line.trimEnd();\n\n      // Skip if line already ends with a semicolon, brace, or starts with a control keyword\n      if (trimmed.endsWith(';') || trimmed.endsWith('}') || trimmed.endsWith('{') ||\n          /^\\s*(if|for|while|import|export)\\b/.test(trimmed) ||\n          /^\\s*(\\/\\/|\\/\\*|\\*\\/)/.test(trimmed)) {\n        return trimmed;\n      }\n\n      // Simple heuristic for expressions or assignments\n      const hasAssignment = /[^=!<>]=[^=]|=.+$/.test(trimmed);\n      const endsWithExpr = hasAssignment || /\\w$/.test(trimmed);\n\n      return endsWithExpr ? trimmed + ';' : trimmed;\n    });\n\n    // ---------- Step 3: Collapse long string literals ----------\n    const collapsedLines = semicolonedLines.map(line => {\n      // Find all string literals (single or double quoted)\n      const stringRegex = /(['\"])((?:\\\\.|[^\\\\])*?)\\1/g;\n      return line.replace(stringRegex, (match, quote, inside) => {\n        if (inside.length <= 80) return match;\n        const parts = [];\n        for (let i = 0; i < inside.length; i += 80) {\n          parts.push(inside.slice(i, i + 80));\n        }\n        let replaced = parts[0];\n        for (let i = 1; i < parts.length; i++) {\n          replaced += ' + ' + quote + parts[i] + quote;\n        }\n        return quote + replaced + quote;\n      });\n    });\n\n    const cleanedContent = collapsedLines.join('\\n');\n\n    // ---------- Step 4: Compute new file path ----------\n    const filePath = params.filePath;\n    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\\\'));\n    const baseName = filePath.slice(lastSlash + 1);\n    const dotIndex = baseName.lastIndexOf('.');\n    const namePart = dotIndex !== -1 ? baseName.slice(0, dotIndex) : baseName;\n    const newFileName = namePart + '-atlas.js';\n    const newFilePath = lastSlash !== -1 ? filePath.slice(0, lastSlash + 1) + newFileName : newFileName;\n\n    // Since we cannot actually write to disk, we simply return the path and the cleaned content.\n    // In a real environment, you would write `cleanedContent` to `newFilePath` here.\n\n    return { success: true, result: { path: newFilePath, content: cleanedContent } };\n  } catch (e) {\n    return { success: false, error: e.message };\n  }\n}",
     "params": {
-      "input": "Hello!"
+      "input": "Create a Node.js function that accepts a file path to a JavaScript file, reads its contents, removes trailing spaces on each line, adds semicolons at the end of statements that are missing them (simple heuristic: lines ending with an assignment, function definition, or expression that do not already have a semicolon, closing brace, opening brace, or line starting with an if/for/while/import/export), collapses string literals longer than 80 characters into concatenated strings with plus signs (simple heuristic: split at 80 chars inside the string), and writes the cleaned content to a new file in the same directory with the same filename appended with `-atlas.js` (e.g., `cli.js` -> `cli-atlas.js`). The function should return the path of the created file."
     },
-    "description": "Auto-generated task for: say_hello",
-    "createdAt": "2026-07-03T14:27:22.924Z"
+    "description": "Auto-generated task for: sanitize_js_file",
+    "createdAt": "2026-07-03T15:19:02.460Z"
+  },
+  "sanitize_file_path": {
+    "name": "sanitize_file_path",
+    "code": "function execute_sanitize_file_path(params) {\n  try {\n    if (!params || typeof params.input !== 'string') {\n      return { success: false, error: 'Invalid input' };\n    }\n    const input = params.input;\n    // Extract a Windows‑style file path from the input\n    const match = input.match(/([A-Za-z]:\\\\[^\\\\\\s]+(?:\\\\[^\\\\\\s]+)*)/);\n    if (!match) {\n      return { success: false, error: 'No path found' };\n    }\n    let path = match[1];\n    // Normalize separators and remove duplicate dashes\n    path = path.replace(/\\\\/g, '/');\n    path = path.replace(/---/g, '-');\n    return { success: true, result: path };\n  } catch (e) {\n    return { success: false, error: e.message || 'Error' };\n  }\n}",
+    "params": {
+      "input": "Hi! Can you sanitize C:\\Users\\tanne\\OneDrive\\Desktop\\---\\Github\\atlas\\src\\cli.js"
+    },
+    "description": "Auto-generated task for: sanitize_file_path",
+    "createdAt": "2026-07-03T15:30:03.405Z"
   }
 }
