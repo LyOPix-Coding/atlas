@@ -7,14 +7,5 @@
     },
     "description": "Auto-generated task for: sanitize_js_file",
     "createdAt": "2026-07-03T15:19:02.460Z"
-  },
-  "sanitize_file_path": {
-    "name": "sanitize_file_path",
-    "code": "function execute_sanitize_file_path(params) {\n  try {\n    if (!params || typeof params.input !== 'string') {\n      return { success: false, error: 'Invalid input' };\n    }\n    const input = params.input;\n    // Extract a Windows‑style file path from the input\n    const match = input.match(/([A-Za-z]:\\\\[^\\\\\\s]+(?:\\\\[^\\\\\\s]+)*)/);\n    if (!match) {\n      return { success: false, error: 'No path found' };\n    }\n    let path = match[1];\n    // Normalize separators and remove duplicate dashes\n    path = path.replace(/\\\\/g, '/');\n    path = path.replace(/---/g, '-');\n    return { success: true, result: path };\n  } catch (e) {\n    return { success: false, error: e.message || 'Error' };\n  }\n}",
-    "params": {
-      "input": "Hi! Can you sanitize C:\\Users\\tanne\\OneDrive\\Desktop\\---\\Github\\atlas\\src\\cli.js"
-    },
-    "description": "Auto-generated task for: sanitize_file_path",
-    "createdAt": "2026-07-03T15:30:03.405Z"
   }
 }
