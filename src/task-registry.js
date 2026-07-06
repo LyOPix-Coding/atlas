@@ -33,17 +33,31 @@ class TaskRegistry {
     return this.tasks[taskName];
   }
 
-  async registerTask(taskName, code, params, description, tags) {
+  // `embedding` is optional — a vector (array of numbers) representing the
+  // semantic content of the original request, used for de-duplication. Tasks
+  // registered before this feature existed simply won't have one until
+  // updateTaskEmbedding() backfills it.
+  async registerTask(taskName, code, params, description, tags, embedding) {
     this.tasks[taskName] = {
       name: taskName,
       code: code,
       params: params,
       description: description,
       tags: tags,
+      embedding: embedding || undefined,
       createdAt: new Date().toISOString(),
     };
     await this.saveRegistry();
     logger.info(`Registered new task: ${taskName}`);
+  }
+
+  // Lazily backfills an embedding onto an existing task (e.g. one created
+  // before semantic de-dup existed, or where the first embed() call failed).
+  async updateTaskEmbedding(taskName, embedding) {
+    if (!this.tasks[taskName] || !embedding) return;
+    this.tasks[taskName].embedding = embedding;
+    await this.saveRegistry();
+    logger.debug(`Backfilled embedding for task: ${taskName}`);
   }
 
   hasTask(taskName) {

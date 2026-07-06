@@ -7,7 +7,9 @@ const conversationStore = require('./utils/conversation-store');
 const ollamaUsage = require('./utils/ollama-usage');
 const savedPrompts = require('./utils/saved-prompts');
 
-// Tool schemas the model can choose to call during askOllama's chat loop.
+// Tool schemas the model can choose to call, whether the input was routed
+// down the "question" path or the "command" path. Web tools give it live
+// information; task tools let it actually perform built-in actions.
 const WEB_TOOLS = [
   {
     type: 'function',
@@ -119,13 +121,16 @@ const TASK_TOOLS = [
   },
 ];
 
+// Only for genuinely new capabilities. Once generate_function creates a task,
+// that task gets its own tool schema automatically (see buildDynamicTaskTools)
+// and won't need to go through generate_function again.
 const CODE_TOOLS = [
   {
     type: 'function',
     function: {
       name: 'generate_function',
       description:
-        'Write and run a brand-new JavaScript function to do something none of the other tools cover — custom calculations, string/array/object manipulation, algorithms, data transforms, etc. The function is generated on the fly, validated for safety (no require/fetch/file/network/eval), executed immediately in a sandbox, and saved to the task registry so it can be reused later. Use this whenever the user asks you to write, create, build, or run code/a function/a script to do something specific that the other tools do not already handle.',
+        'Write and run a brand-new JavaScript function to do something none of the other tools (including previously learned tasks) already cover — custom calculations, string/array/object manipulation, algorithms, data transforms, etc. The function is generated on the fly, validated for safety (no require/fetch/file/network/eval), executed immediately in a sandbox, and saved to the task registry. Once saved, it automatically becomes its own directly-callable tool on future turns — do not call generate_function again for something you (or a past run) already built; check whether a matching task tool exists first.',
       parameters: {
         type: 'object',
         properties: {
@@ -146,9 +151,11 @@ const CODE_TOOLS = [
   },
 ];
 
-const ALL_TOOLS = [...WEB_TOOLS, ...TASK_TOOLS, ...CODE_TOOLS];
+const STATIC_TOOLS = [...WEB_TOOLS, ...TASK_TOOLS, ...CODE_TOOLS];
+const STATIC_TOOL_NAMES = new Set(STATIC_TOOLS.map((t) => t.function.name));
+const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.function.name));
 
-const MAX_TOOL_ITERATIONS = 10;
+const MAX_TOOL_ITERATIONS = 9999;
 
 class InputLayer {
   constructor(app, intentProcessor, taskExecutor) {
@@ -213,11 +220,70 @@ class InputLayer {
     });
   }
 
+  // --- Dynamic tool schema generation -------------------------------------
+
+  // Infers a JSON-schema type from an example value stored in the registry.
+  jsonSchemaType(value) {
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    if (Array.isArray(value)) return 'array';
+    if (value !== null && typeof value === 'object') return 'object';
+    return 'string';
+  }
+
+  // Learned tasks are registered with an example `params` object (the params
+  // they were first created with), not a formal schema — so we derive one.
+  buildParamSchema(exampleParams) {
+    const properties = {};
+    const required = [];
+
+    if (exampleParams && typeof exampleParams === 'object') {
+      for (const [key, value] of Object.entries(exampleParams)) {
+        properties[key] = {
+          type: this.jsonSchemaType(value),
+          description: `Value for "${key}"`,
+        };
+        required.push(key);
+      }
+    }
+
+    return { type: 'object', properties, required };
+  }
+
+  // Turns every task currently in the registry into its own callable tool
+  // schema, so previously self-programmed functions are reusable directly —
+  // no need to route back through generate_function.
+  buildDynamicTaskTools() {
+    const taskNames = this.taskExecutor.registry.listTasks();
+
+    return taskNames
+      .filter((name) => !STATIC_TOOL_NAMES.has(name)) // never shadow a built-in tool
+      .map((name) => {
+        const task = this.taskExecutor.registry.getTask(name);
+        return {
+          type: 'function',
+          function: {
+            name,
+            description:
+              (task && task.description) || `Previously learned task: ${name}`,
+            parameters: this.buildParamSchema(task && task.params),
+          },
+        };
+      });
+  }
+
+  // Full tool list for a given turn: static tools + whatever has been
+  // learned so far. Rebuilt on every call so a task learned mid-conversation
+  // (or by a prior request) is immediately callable.
+  getToolSchemas() {
+    return [...STATIC_TOOLS, ...this.buildDynamicTaskTools()];
+  }
+
+  // --- Request routing ------------------------------------------------------
+
   // Core routing logic, shared by the HTTP route and the CLI menu.
   async handleRequest(input, clientRequestId) {
     const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
-
-// TODO:
 
     if (!input) {
       return { httpStatus: 400, body: { error: 'Missing "input" field' } };
@@ -243,28 +309,62 @@ class InputLayer {
       };
     }
 
-    // Otherwise, it's a command → Intent Processing
-    logger.debug(`Routing to Intent Processing for command: ${input}`);
-    const intentResult = await this.intentProcessor.process(input, requestId);
+    // Otherwise, it's a command — still handled by the model via tool-calling,
+    // just with a safety gate up front and a different framing prompt.
+    logger.debug(`Routing to command handling for: ${input}`);
+    const commandOutcome = await this.handleCommand(input, requestId);
 
-    if (!intentResult.approved) {
-      logger.warn(`Request [${requestId}] rejected: ${intentResult.reason}`);
+    if (commandOutcome.rejected) {
+      logger.warn(`Request [${requestId}] rejected: ${commandOutcome.reason}`);
       return {
         httpStatus: 403,
-        body: { status: 'rejected', reason: intentResult.reason, requestId },
+        body: { status: 'rejected', reason: commandOutcome.reason, requestId },
       };
     }
 
-    // If approved, execute task
-    const taskResult = await this.taskExecutor.execute(
-      intentResult.task,
-      intentResult.params,
-      requestId
-    );
-
     return {
       httpStatus: 200,
-      body: { status: 'completed', requestId, type: 'command', result: taskResult },
+      body: { status: 'completed', requestId, type: 'command', result: commandOutcome.result },
+    };
+  }
+
+  // Command path: safety gate, then let the model pick and call the right
+  // tool itself — built-in, previously learned, or (if nothing fits)
+  // generate_function to create a new one.
+  async handleCommand(input, requestId) {
+    const safety = this.intentProcessor.checkSafety(input);
+    if (!safety.approved) {
+      return { rejected: true, reason: safety.reason };
+    }
+
+    const messages = [
+      { role: 'system', content: SYSTEM_IDENTITY },
+      {
+        role: 'user',
+        content: `${input}\n\n(This is a command — use the appropriate tool to actually perform it, then briefly confirm what you did.)`,
+      },
+    ];
+
+    const { answer, toolResults, toolsUsed } = await this.runWithTools(messages, requestId);
+
+    // Prefer the result of the last task-like tool the model actually called
+    // (built-in, learned, or generate_function's own execution result).
+    const taskCall = [...toolResults]
+      .reverse()
+      .find((t) => t.name !== 'web_search' && t.name !== 'web_fetch');
+
+    if (taskCall) {
+      return {
+        rejected: false,
+        result: { ...taskCall.result, assistantMessage: answer, toolsUsed },
+      };
+    }
+
+    // Model didn't call a task tool — e.g. it decided the request wasn't
+    // actually actionable, or answered conversationally instead.
+    return {
+      rejected: false,
+      result: { success: false, message: answer, toolsUsed },
     };
   }
 
@@ -386,7 +486,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           : question + ' (give me a short answer, like your speaking from a tts)',
       });
 
-      const { answer, toolsUsed } = await this.chatWithTools(messages, requestId);
+      const { answer, toolsUsed } = await this.runWithTools(messages, requestId);
 
       messages.push({ role: 'assistant', content: answer });
       conversationStore.save(requestId, messages);
@@ -401,14 +501,23 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     }
   }
 
-  // Runs the chat/tool-call loop: the model can call web_search / web_fetch
-  // as many times as it needs (up to MAX_TOOL_ITERATIONS) before giving a final answer.
-  async chatWithTools(messages, requestId) {
+  // Runs the chat/tool-call loop: the model can call web_search / web_fetch /
+  // any built-in task tool / any previously learned task tool / generate_function
+  // as many times as it needs (up to MAX_TOOL_ITERATIONS) before giving a final
+  // answer. Returns the final text answer, the raw list of tool calls + results
+  // (for callers that need structured task output), and a flat list of tool
+  // names used (for logging/CLI display).
+  async runWithTools(messages, requestId) {
+    const toolResults = [];
     const toolsUsed = [];
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+      // Rebuilt every iteration so a task learned earlier in this same loop
+      // (via generate_function) is immediately callable on the next turn.
+      const tools = this.getToolSchemas();
+
       const response = await this.callOllama(
-        { model: config.ollamaModel, messages, tools: ALL_TOOLS },   // was WEB_TOOLS
+        { model: config.ollamaModel, messages, tools },
         'chat',
         requestId
       );
@@ -416,7 +525,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       const toolCalls = response.message.tool_calls;
 
       if (!toolCalls || toolCalls.length === 0) {
-        return { answer: response.message.content, toolsUsed };
+        return { answer: response.message.content, toolResults, toolsUsed };
       }
 
       // Model wants to use a tool — record its request, then feed back results.
@@ -425,6 +534,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       for (const call of toolCalls) {
         toolsUsed.push(call.function.name);
         const result = await this.executeTool(call, requestId);
+        toolResults.push({ name: call.function.name, args: call.function.arguments || {}, result });
         messages.push({
           role: 'tool',
           tool_name: call.function.name,
@@ -441,14 +551,12 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       'chat-forced-final',
       requestId
     );
-    return { answer: finalResponse.message.content, toolsUsed };
+    return { answer: finalResponse.message.content, toolResults, toolsUsed };
   }
 
   async executeTool(call, requestId) {
     const name = call.function.name;
     const args = call.function.arguments || {};
-
-    const BUILTIN_TASK_TOOLS = ['http_request', 'file_read', 'file_write', 'gpio_set', 'email_send'];
 
     try {
       if (name === 'web_search') {
@@ -470,11 +578,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
         };
       }
 
-      if (BUILTIN_TASK_TOOLS.includes(name)) {
-        logger.info(`Tool call [${requestId}]: ${name}(${JSON.stringify(args)})`);
-        return await this.taskExecutor.execute(name, args, requestId);
-      }
-
       if (name === 'generate_function') {
         logger.info(`Tool call [${requestId}]: generate_function("${args.description}")`);
 
@@ -483,8 +586,9 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
         }
 
         // Reuses the existing learn-and-execute pipeline (code gen -> validate ->
-        // register in task registry -> sandboxed execution), same path the
-        // command router falls back to for unrecognized tasks.
+        // register in task registry -> sandboxed execution). Once registered,
+        // buildDynamicTaskTools() will pick it up as its own tool on the very
+        // next loop iteration (or the next request entirely).
         const taskParams = { input: args.description, ...(args.params || {}) };
         const result = await this.taskExecutor.execute('unknown', taskParams, requestId);
 
@@ -495,6 +599,14 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           error: result.error,
           generatedCode: result.generatedCode,
         };
+      }
+
+      if (TASK_TOOL_NAMES.has(name) || this.taskExecutor.registry.hasTask(name)) {
+        // Covers both built-in tasks (http_request, file_read, ...) and any
+        // previously learned/generated task — task-executor.execute() already
+        // knows how to route each of those correctly.
+        logger.info(`Tool call [${requestId}]: ${name}(${JSON.stringify(args)})`);
+        return await this.taskExecutor.execute(name, args, requestId);
       }
 
       logger.warn(`Tool call [${requestId}]: unknown tool "${name}"`);

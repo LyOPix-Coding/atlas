@@ -1,12 +1,15 @@
 const fs = require('fs').promises;
+const path = require('path');
 const https = require('https');
 const http = require('http');
-const { execSync } = require('child_process');
+const Docker = require('dockerode');
 const logger = require('./utils/logger');
+const config = require('./utils/config');
 const TaskRegistry = require('./task-registry');
 const CodeGenerator = require('./code-generator');
 const SelfAwareness = require('./self-awareness');
 const WebSearch = require('./web-search');
+const embeddingsService = require('./utils/embeddings');
 
 class TaskExecutor {
   constructor() {
@@ -14,6 +17,11 @@ class TaskExecutor {
     this.codeGenerator = new CodeGenerator();
     this.selfAwareness = new SelfAwareness();
     this.webSearch = new WebSearch();
+
+    // Connects to the local Docker daemon (unix socket on Linux/macOS,
+    // named pipe on Windows — dockerode picks the right default).
+    this.docker = new Docker();
+    this.imageReady = false;
   }
 
   async execute(task, params, requestId) {
@@ -53,13 +61,75 @@ class TaskExecutor {
     }
   }
 
+  // Semantic de-duplication: embeds the incoming request and compares it
+  // against every existing learned task's embedding (backfilling any that
+  // are missing one). Returns the best match if it clears the similarity
+  // threshold, along with the query's own embedding so callers can reuse it
+  // when registering a genuinely new task (avoids a second embed() call).
+  async findSimilarTask(description) {
+    const queryEmbedding = await embeddingsService.embed(description);
+
+    if (!queryEmbedding) {
+      return { queryEmbedding: null, match: null };
+    }
+
+    let bestName = null;
+    let bestScore = 0;
+
+    for (const name of this.registry.listTasks()) {
+      const task = this.registry.getTask(name);
+      if (!task) continue;
+
+      let taskEmbedding = task.embedding;
+
+      if (!taskEmbedding) {
+        const textToEmbed = (task.params && task.params.input) || task.description || name;
+        taskEmbedding = await embeddingsService.embed(textToEmbed);
+        if (taskEmbedding && typeof this.registry.updateTaskEmbedding === 'function') {
+          await this.registry.updateTaskEmbedding(name, taskEmbedding);
+        }
+      }
+
+      if (!taskEmbedding) continue;
+
+      const score = embeddingsService.cosineSimilarity(queryEmbedding, taskEmbedding);
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = name;
+      }
+    }
+
+    if (bestName && bestScore >= config.taskSimilarityThreshold) {
+      logger.info(
+        `Found similar existing task "${bestName}" (similarity ${bestScore.toFixed(3)}) — reusing instead of generating`
+      );
+      return { queryEmbedding, match: { taskName: bestName, similarity: bestScore } };
+    }
+
+    return { queryEmbedding, match: null };
+  }
+
   async learnAndExecute(taskName, params, requestId) {
     try {
+      const rawInput = params && params.input ? params.input : JSON.stringify(params);
+
+      // Step -1: Check whether an existing learned task already covers this
+      // request semantically, before spending a code-generation call on it.
+      const { queryEmbedding, match } = await this.findSimilarTask(rawInput);
+
+      if (match) {
+        const reusedResult = await this.executeLearned(match.taskName, params);
+        return {
+          ...reusedResult,
+          reused: true,
+          similarity: match.similarity,
+        };
+      }
+
       // Step 0: If the classifier only gave us a generic label (e.g. "unknown"),
       // ask the model for a real descriptive name first.
       let resolvedName = taskName;
       if (!resolvedName || resolvedName === 'unknown') {
-        const rawInput = params && params.input ? params.input : JSON.stringify(params);
         resolvedName = await this.codeGenerator.generateTaskName(rawInput);
         logger.info(`Resolved task name [${requestId}]: ${resolvedName}`);
       }
@@ -82,15 +152,18 @@ class TaskExecutor {
         };
       }
 
-      // Step 3: Register the task (save to registry)
+      // Step 3: Register the task (save to registry), including the
+      // embedding we already computed during the dedup check above.
       await this.registry.registerTask(
         resolvedName,
         generatedCode,
         params,
-        `Auto-generated task for: ${resolvedName}`
+        `Auto-generated task for: ${resolvedName}`,
+        undefined,
+        queryEmbedding
       );
 
-      // Step 4: Execute in Docker sandbox
+      // Step 4: Execute in the Docker sandbox
       const result = await this.executeInDocker(generatedCode, params, resolvedName);
 
       return {
@@ -128,25 +201,67 @@ class TaskExecutor {
     }
   }
 
-  async executeInDocker(code, params, taskName) {
+  // Makes sure the sandbox image exists locally, building it from
+  // docker/Dockerfile on first use if needed. Cached after the first
+  // successful check so this doesn't add latency to every execution.
+  async ensureSandboxImage() {
+    if (this.imageReady) return;
+
     try {
-      logger.debug(`Executing ${taskName} in sandbox`);
+      const images = await this.docker.listImages({
+        filters: { reference: [config.dockerImage] },
+      });
 
-      // Extract the function name - handle both async and regular functions
-      let funcNameMatch = code.match(/async\s+function\s+(\w+)/);
-      if (!funcNameMatch) {
-        funcNameMatch = code.match(/function\s+(\w+)/);
+      if (images.length > 0) {
+        this.imageReady = true;
+        return;
       }
 
-      if (!funcNameMatch) {
-        throw new Error('Could not extract function name from generated code');
-      }
-      const funcName = funcNameMatch[1];
+      logger.info(`Docker image "${config.dockerImage}" not found — building from docker/Dockerfile...`);
+      const dockerDir = path.join(__dirname, '../docker');
+      const stream = await this.docker.buildImage(
+        { context: dockerDir, src: ['Dockerfile'] },
+        { t: config.dockerImage }
+      );
 
-      logger.debug(`Extracted function name: ${funcName}`);
+      await new Promise((resolve, reject) => {
+        this.docker.modem.followProgress(stream, (err, res) => (err ? reject(err) : resolve(res)));
+      });
 
-      // Create wrapper that calls the function
-      const wrapper = `
+      logger.info(`Docker image "${config.dockerImage}" built successfully`);
+      this.imageReady = true;
+    } catch (err) {
+      // Fail closed: no image means no sandbox, and we never want to fall
+      // back to running generated code directly on the host.
+      throw new Error(
+        `Could not prepare Docker sandbox image: ${err.message}. Is Docker running and accessible?`
+      );
+    }
+  }
+
+  // Runs generated/learned code inside a locked-down, disposable Docker
+  // container: no network, read-only root filesystem, memory/CPU/PID caps,
+  // non-root user, and a hard timeout. Code is passed directly as a `node -e`
+  // argument — no host temp files, no volume mounts. Output is captured by
+  // attaching to the container's stream before starting it, rather than
+  // relying on container.logs() after the fact — logs()'s return shape has
+  // proven inconsistent (Buffer, stream, or a plain object depending on
+  // environment); attach() always returns a real Node.js stream.
+  async executeInDocker(code, params, taskName) {
+    await this.ensureSandboxImage();
+
+    let funcNameMatch = code.match(/async\s+function\s+(\w+)/);
+    if (!funcNameMatch) {
+      funcNameMatch = code.match(/function\s+(\w+)/);
+    }
+    if (!funcNameMatch) {
+      throw new Error('Could not extract function name from generated code');
+    }
+    const funcName = funcNameMatch[1];
+
+    logger.debug(`Executing ${taskName} in Docker sandbox (function: ${funcName})`);
+
+    const wrapper = `
 ${code}
 
 (async () => {
@@ -160,21 +275,85 @@ ${code}
 })();
     `;
 
-      // Write to temp file and execute
-      const fs = require('fs').promises;
-      const path = require('path');
-      const os = require('os');
-      const tempDir = os.tmpdir();
-      const tempFile = path.join(tempDir, `task_${Date.now()}.js`);
+    let container;
+    let timedOut = false;
+    let timeoutHandle;
+    const chunks = [];
 
-      await fs.writeFile(tempFile, wrapper, 'utf-8');
-      const result = execSync(`node ${tempFile}`, { encoding: 'utf-8' });
-      await fs.unlink(tempFile);
+    try {
+      container = await this.docker.createContainer({
+        Image: config.dockerImage,
+        Cmd: ['-e', wrapper],
+        Tty: true, // merges stdout/stderr, no demux framing to parse
+        AttachStdout: true,
+        AttachStderr: true,
+        OpenStdin: false,
+        User: 'node',
+        HostConfig: {
+          Memory: config.sandboxMemoryMb * 1024 * 1024,
+          MemorySwap: config.sandboxMemoryMb * 1024 * 1024, // == Memory → effectively disables swap
+          NanoCpus: Math.round(config.sandboxCpuLimit * 1e9),
+          PidsLimit: config.sandboxPidsLimit,
+          NetworkMode: 'none',
+          ReadonlyRootfs: true,
+          Tmpfs: { '/tmp': 'rw,size=16m,noexec' },
+          AutoRemove: false, // removed manually, after reading output
+        },
+      });
 
-      return JSON.parse(result);
+      // Attach BEFORE starting, so we don't race the container and miss
+      // early output. This always resolves to a real Node.js stream.
+      const attachStream = await container.attach({ stream: true, stdout: true, stderr: true });
+      attachStream.on('data', (chunk) => chunks.push(chunk));
+
+      await container.start();
+
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        container.kill().catch(() => {}); // best-effort; container may already be gone
+      }, config.sandboxTimeoutMs);
+
+      const waitResult = await container
+        .wait()
+        .catch((err) => ({ StatusCode: -1, _waitErr: err.message }));
+
+      clearTimeout(timeoutHandle);
+
+      // Brief grace period for the last chunk to flush after exit.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const output = Buffer.concat(chunks).toString('utf-8');
+
+      if (timedOut) {
+        throw new Error(`Sandbox execution timed out after ${config.sandboxTimeoutMs}ms`);
+      }
+
+      if (waitResult.StatusCode !== 0) {
+        throw new Error(
+          `Sandbox exited with non-zero status (${waitResult.StatusCode}): ${output.slice(0, 500)}`
+        );
+      }
+
+      const lines = output.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lastLine = lines[lines.length - 1];
+
+      if (!lastLine) {
+        throw new Error('Sandbox produced no output');
+      }
+
+      return JSON.parse(lastLine);
     } catch (err) {
-      logger.error(`Execution error: ${err.message}`);
+      logger.error(`Sandbox execution error: ${err.message}`);
       throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (container) {
+        try {
+          await container.remove({ force: true });
+        } catch (removeErr) {
+          logger.warn(`Failed to remove sandbox container: ${removeErr.message}`);
+        }
+      }
     }
   }
 
