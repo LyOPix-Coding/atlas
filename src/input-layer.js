@@ -130,7 +130,7 @@ const CODE_TOOLS = [
     function: {
       name: 'generate_function',
       description:
-        'Write and run a brand-new JavaScript function to do something none of the other tools (including previously learned tasks) already cover — custom calculations, string/array/object manipulation, algorithms, data transforms, etc. The function is generated on the fly, validated for safety (no require/fetch/file/network/eval), executed immediately in a sandbox, and saved to the task registry. Once saved, it automatically becomes its own directly-callable tool on future turns — do not call generate_function again for something you (or a past run) already built; check whether a matching task tool exists first.',
+        'Write and run a brand-new JavaScript function to do something none of the other tools (including previously learned tasks) already cover — custom calculations, string/array/object manipulation, algorithms, data transforms, etc. The function is generated on the fly, validated for safety (no require/fetch/file/network/eval), executed immediately in a sandbox, and saved to the task registry. Once saved, it automatically becomes its own directly-callable tool on future turns. Do NOT call generate_function to fix or improve a task that already exists — use edit_function for that instead; check whether a matching task tool already exists first.',
       parameters: {
         type: 'object',
         properties: {
@@ -146,6 +146,38 @@ const CODE_TOOLS = [
           },
         },
         required: ['description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_function',
+      description:
+        'View or edit the code, description, or example params of a previously generated/learned task — one already listed among your own tools. Call it with only "taskName" first to see its current code, description, and params. If the task\'s behavior is wrong, incomplete, or needs improvement, call it again with "taskName" plus "code" (and optionally "description"/"params") to apply a fix. The edited code is validated for safety and test-executed before being saved — if it fails, you\'ll get a real error back so you can revise and try again. Use this instead of generate_function whenever a matching task already exists; do not create a duplicate task for something you can just fix here.',
+      parameters: {
+        type: 'object',
+        properties: {
+          taskName: {
+            type: 'string',
+            description: 'The exact name of the existing task to view or edit (matches one of your other tool names).',
+          },
+          code: {
+            type: 'string',
+            description:
+              'New full function code to replace the existing implementation. Must define a single top-level function taking a `params` object and returning { success: true, result: VALUE } or { success: false, error: MESSAGE }.',
+          },
+          description: {
+            type: 'string',
+            description: 'New description for the task.',
+          },
+          params: {
+            type: 'object',
+            description:
+              'New example params for the task. Also used as the test input when code is being edited, unless the task\'s existing params make more sense as a test case.',
+          },
+        },
+        required: ['taskName'],
       },
     },
   },
@@ -598,7 +630,25 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           result: result.result,
           error: result.error,
           generatedCode: result.generatedCode,
+          reused: result.reused || false,
+          similarity: result.similarity,
+          repaired: result.repaired || false,
+          repairAttempts: result.repairAttempts,
         };
+      }
+
+      if (name === 'edit_function') {
+        logger.info(`Tool call [${requestId}]: edit_function("${args.taskName}")`);
+
+        if (!args.taskName) {
+          return { success: false, error: 'Missing "taskName" for edit_function' };
+        }
+
+        return await this.taskExecutor.editGeneratedTask(args.taskName, {
+          code: args.code,
+          description: args.description,
+          params: args.params,
+        });
       }
 
       if (TASK_TOOL_NAMES.has(name) || this.taskExecutor.registry.hasTask(name)) {

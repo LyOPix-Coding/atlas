@@ -1,3 +1,5 @@
+const path = require('path');
+
 module.exports = {
   port: process.env.PORT || 3000,
   host: process.env.HOST || 'localhost',
@@ -7,18 +9,11 @@ module.exports = {
   ollamaHost: process.env.OLLAMA_HOST || 'https://ollama.com',
   ollamaApiKey: process.env.OLLAMA_API_KEY || '',
   ollamaModel: process.env.OLLAMA_MODEL || 'gpt-oss:20b-cloud',
-  // Used only for semantic de-duplication of generated tasks (see
-  // src/utils/embeddings.js). Must be a model with `ollama pull` support for
-  // embeddings — nomic-embed-text is small and fast for this purpose.
   ollamaEmbedModel: process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text',
   ollamaEmbedHost: process.env.OLLAMA_EMBED_HOST || 'http://localhost:11434',
-  // Cosine similarity (0-1) above which a new function request is considered
-  // a duplicate of an existing learned task, and gets reused instead of
-  // triggering a new code-generation call.
   taskSimilarityThreshold: process.env.TASK_SIMILARITY_THRESHOLD
     ? parseFloat(process.env.TASK_SIMILARITY_THRESHOLD)
     : 0.85,
-  // Docker sandbox resource limits for executing generated/learned tasks.
   sandboxTimeoutMs: process.env.SANDBOX_TIMEOUT_MS
     ? parseInt(process.env.SANDBOX_TIMEOUT_MS, 10)
     : 10000,
@@ -31,7 +26,15 @@ module.exports = {
   sandboxPidsLimit: process.env.SANDBOX_PIDS_LIMIT
     ? parseInt(process.env.SANDBOX_PIDS_LIMIT, 10)
     : 64,
-  // Optional — set to enable "tokens left" tracking in the CLI menu.
+  fileSandboxRoot: process.env.FILE_SANDBOX_ROOT
+    ? path.resolve(process.env.FILE_SANDBOX_ROOT)
+    : path.join(__dirname, '../../data/user-files'),
+  // Max number of self-repair attempts if a learned/generated task throws at
+  // runtime: on failure, the error + code are sent back to the model to
+  // patch, up to this many times, before giving up entirely.
+  maxRepairAttempts: process.env.REPAIR_TRIES_LIMIT
+    ? parseInt(process.env.REPAIR_TRIES_LIMIT, 10)
+    : 3,
   ollamaTokenBudget: process.env.OLLAMA_TOKEN_BUDGET
     ? parseInt(process.env.OLLAMA_TOKEN_BUDGET, 10)
     : null,

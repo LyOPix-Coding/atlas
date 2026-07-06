@@ -42,7 +42,10 @@ class SelfAwareness {
   // Refuse to read anything outside the project root, no matter what path gets passed in.
   resolveSafePath(relativePath) {
     const resolved = path.resolve(PROJECT_ROOT, relativePath);
-    if (!resolved.startsWith(PROJECT_ROOT)) {
+    const relative = path.relative(PROJECT_ROOT, resolved);
+    const escapesRoot = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+
+    if (escapesRoot) {
       throw new Error(`Refusing to read path outside project root: ${relativePath}`);
     }
     return resolved;

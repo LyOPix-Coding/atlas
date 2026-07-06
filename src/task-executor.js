@@ -18,8 +18,6 @@ class TaskExecutor {
     this.selfAwareness = new SelfAwareness();
     this.webSearch = new WebSearch();
 
-    // Connects to the local Docker daemon (unix socket on Linux/macOS,
-    // named pipe on Windows — dockerode picks the right default).
     this.docker = new Docker();
     this.imageReady = false;
   }
@@ -28,7 +26,6 @@ class TaskExecutor {
     try {
       logger.info(`Executing task [${requestId}]: ${task}`);
 
-      // Check if task is built-in
       switch (task) {
         case 'http_request':
           return await this.httpRequest(params);
@@ -46,13 +43,11 @@ class TaskExecutor {
           return await this.webSearch.searchAndAnswer(params.query);
       }
 
-      // Check if task is learned
       if (this.registry.hasTask(task)) {
         logger.info(`Executing learned task [${requestId}]: ${task}`);
         return await this.executeLearned(task, params);
       }
 
-      // Unknown task → Try to learn it
       logger.info(`Unknown task [${requestId}]: ${task} → Generating code`);
       return await this.learnAndExecute(task, params, requestId);
     } catch (err) {
@@ -61,11 +56,6 @@ class TaskExecutor {
     }
   }
 
-  // Semantic de-duplication: embeds the incoming request and compares it
-  // against every existing learned task's embedding (backfilling any that
-  // are missing one). Returns the best match if it clears the similarity
-  // threshold, along with the query's own embedding so callers can reuse it
-  // when registering a genuinely new task (avoids a second embed() call).
   async findSimilarTask(description) {
     const queryEmbedding = await embeddingsService.embed(description);
 
@@ -109,12 +99,64 @@ class TaskExecutor {
     return { queryEmbedding, match: null };
   }
 
+  // Runs code in the sandbox with bounded self-repair: on failure, sends the
+  // failing code + actual error back to the model to patch, validates the
+  // patch through the normal safety checks, and retries — up to
+  // config.maxRepairAttempts times. Returns the successful result plus
+  // whichever code version actually worked, so the caller can decide
+  // whether to persist it.
+  async executeWithRepair(code, params, taskName, description) {
+    let currentCode = code;
+    let lastError = null;
+    const maxAttempts = config.maxRepairAttempts;
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+      try {
+        const result = await this.executeInDocker(currentCode, params, taskName);
+        return {
+          result,
+          finalCode: currentCode,
+          repaired: attempt > 0,
+          repairAttempts: attempt,
+        };
+      } catch (err) {
+        lastError = err;
+
+        if (attempt === maxAttempts) {
+          break; // out of attempts
+        }
+
+        logger.warn(
+          `Task "${taskName}" failed (attempt ${attempt + 1}/${maxAttempts + 1}): ${err.message} — attempting self-repair`
+        );
+
+        let repairedCode;
+        try {
+          repairedCode = await this.codeGenerator.repairCode(currentCode, err.message, description);
+        } catch (repairErr) {
+          logger.error(`Repair generation failed for "${taskName}": ${repairErr.message}`);
+          break;
+        }
+
+        const validation = await this.codeGenerator.validateCode(repairedCode);
+        if (!validation.valid) {
+          logger.warn(`Repaired code for "${taskName}" failed validation: ${validation.reason}`);
+          break;
+        }
+
+        currentCode = repairedCode;
+      }
+    }
+
+    throw new Error(
+      `Task "${taskName}" failed after ${maxAttempts} self-repair attempt(s): ${lastError ? lastError.message : 'unknown error'}`
+    );
+  }
+
   async learnAndExecute(taskName, params, requestId) {
     try {
       const rawInput = params && params.input ? params.input : JSON.stringify(params);
 
-      // Step -1: Check whether an existing learned task already covers this
-      // request semantically, before spending a code-generation call on it.
       const { queryEmbedding, match } = await this.findSimilarTask(rawInput);
 
       if (match) {
@@ -126,15 +168,12 @@ class TaskExecutor {
         };
       }
 
-      // Step 0: If the classifier only gave us a generic label (e.g. "unknown"),
-      // ask the model for a real descriptive name first.
       let resolvedName = taskName;
       if (!resolvedName || resolvedName === 'unknown') {
         resolvedName = await this.codeGenerator.generateTaskName(rawInput);
         logger.info(`Resolved task name [${requestId}]: ${resolvedName}`);
       }
 
-      // Step 1: Generate code
       const generatedCode = await this.codeGenerator.generateTaskCode(
         JSON.stringify(params),
         resolvedName
@@ -142,7 +181,6 @@ class TaskExecutor {
 
       logger.debug(`Generated code for ${resolvedName}`);
 
-      // Step 2: Validate code
       const validation = await this.codeGenerator.validateCode(generatedCode);
       if (!validation.valid) {
         return {
@@ -152,8 +190,6 @@ class TaskExecutor {
         };
       }
 
-      // Step 3: Register the task (save to registry), including the
-      // embedding we already computed during the dedup check above.
       await this.registry.registerTask(
         resolvedName,
         generatedCode,
@@ -163,15 +199,29 @@ class TaskExecutor {
         queryEmbedding
       );
 
-      // Step 4: Execute in the Docker sandbox
-      const result = await this.executeInDocker(generatedCode, params, resolvedName);
+      // Execute with self-repair — if the first attempt throws, the model
+      // gets a chance to patch it (up to maxRepairAttempts) before giving up.
+      const { result, finalCode, repaired, repairAttempts } = await this.executeWithRepair(
+        generatedCode,
+        params,
+        resolvedName,
+        rawInput
+      );
+
+      // If repair changed the code, persist the working version so a future
+      // direct call to this task uses the fix, not the original broken code.
+      if (repaired && finalCode !== generatedCode) {
+        await this.registry.updateTaskCode(resolvedName, finalCode);
+      }
 
       return {
         success: true,
         result: result.result,
         learned: true,
         taskName: resolvedName,
-        generatedCode: generatedCode,
+        generatedCode: finalCode,
+        repaired,
+        repairAttempts,
       };
     } catch (err) {
       logger.error(`Learn and execute error: ${err.message}`);
@@ -185,12 +235,26 @@ class TaskExecutor {
   async executeLearned(taskName, params) {
     try {
       const taskDef = this.registry.getTask(taskName);
-      const result = await this.executeInDocker(taskDef.code, params, taskName);
+      const description = (taskDef.params && taskDef.params.input) || taskDef.description || taskName;
+
+      const { result, finalCode, repaired, repairAttempts } = await this.executeWithRepair(
+        taskDef.code,
+        params,
+        taskName,
+        description
+      );
+
+      if (repaired && finalCode !== taskDef.code) {
+        await this.registry.updateTaskCode(taskName, finalCode);
+      }
+
       return {
         success: true,
         result: result.result,
         taskName: taskName,
-        generatedCode: taskDef.code,
+        generatedCode: finalCode,
+        repaired,
+        repairAttempts,
       };
     } catch (err) {
       logger.error(`Learned task execution error: ${err.message}`);
@@ -201,9 +265,76 @@ class TaskExecutor {
     }
   }
 
-  // Makes sure the sandbox image exists locally, building it from
-  // docker/Dockerfile on first use if needed. Cached after the first
-  // successful check so this doesn't add latency to every execution.
+  // Lets the model view or edit a previously generated/learned task directly,
+  // rather than generating a redundant duplicate when the existing one is
+  // just wrong or incomplete. Called with only `taskName`, it's a read —
+  // returns the current code/description/params so the model can inspect
+  // before deciding how to fix it. Called with any of code/description/params
+  // set, it validates and test-executes the new code before saving, so a
+  // bad edit fails fast with a real error instead of silently corrupting a
+  // working tool.
+  async editGeneratedTask(taskName, updates = {}) {
+    if (!this.registry.hasTask(taskName)) {
+      return { success: false, error: `No such task: "${taskName}".` };
+    }
+
+    const task = this.registry.getTask(taskName);
+    const { code: newCode, description: newDescription, params: newParams } = updates;
+
+    // Nothing to change — treat this as a view request.
+    if (newCode === undefined && newDescription === undefined && newParams === undefined) {
+      return {
+        success: true,
+        viewOnly: true,
+        taskName,
+        code: task.code,
+        description: task.description,
+        params: task.params,
+      };
+    }
+
+    if (newCode !== undefined) {
+      const validation = await this.codeGenerator.validateCode(newCode);
+      if (!validation.valid) {
+        return { success: false, error: `Edited code failed validation: ${validation.reason}` };
+      }
+
+      const funcName = this.extractFunctionName(newCode);
+      if (!funcName) {
+        return {
+          success: false,
+          error: 'Could not find a top-level function in the edited code (expected `function name(params) { ... }`).',
+        };
+      }
+
+      // Test-run before saving — catches immediate breakage right away
+      // instead of finding out on the next real call.
+      const testParams = newParams !== undefined ? newParams : task.params;
+      try {
+        var testResult = await this.executeInDocker(newCode, testParams, taskName);
+      } catch (err) {
+        return {
+          success: false,
+          error: `Edited code failed a test run with params ${JSON.stringify(testParams)}: ${err.message}`,
+        };
+      }
+    }
+
+    const updatedTask = await this.registry.editTask(taskName, {
+      ...(newCode !== undefined ? { code: newCode } : {}),
+      ...(newDescription !== undefined ? { description: newDescription } : {}),
+      ...(newParams !== undefined ? { params: newParams } : {}),
+    });
+
+    return {
+      success: true,
+      taskName,
+      description: updatedTask.description,
+      params: updatedTask.params,
+      testResult: typeof testResult !== 'undefined' ? testResult.result : undefined,
+    };
+  }
+
   async ensureSandboxImage() {
     if (this.imageReady) return;
 
@@ -231,33 +362,19 @@ class TaskExecutor {
       logger.info(`Docker image "${config.dockerImage}" built successfully`);
       this.imageReady = true;
     } catch (err) {
-      // Fail closed: no image means no sandbox, and we never want to fall
-      // back to running generated code directly on the host.
       throw new Error(
         `Could not prepare Docker sandbox image: ${err.message}. Is Docker running and accessible?`
       );
     }
   }
 
-  // Runs generated/learned code inside a locked-down, disposable Docker
-  // container: no network, read-only root filesystem, memory/CPU/PID caps,
-  // non-root user, and a hard timeout. Code is passed directly as a `node -e`
-  // argument — no host temp files, no volume mounts. Output is captured by
-  // attaching to the container's stream before starting it, rather than
-  // relying on container.logs() after the fact — logs()'s return shape has
-  // proven inconsistent (Buffer, stream, or a plain object depending on
-  // environment); attach() always returns a real Node.js stream.
   async executeInDocker(code, params, taskName) {
     await this.ensureSandboxImage();
 
-    let funcNameMatch = code.match(/async\s+function\s+(\w+)/);
-    if (!funcNameMatch) {
-      funcNameMatch = code.match(/function\s+(\w+)/);
-    }
-    if (!funcNameMatch) {
+    const funcName = this.extractFunctionName(code);
+    if (!funcName) {
       throw new Error('Could not extract function name from generated code');
     }
-    const funcName = funcNameMatch[1];
 
     logger.debug(`Executing ${taskName} in Docker sandbox (function: ${funcName})`);
 
@@ -284,25 +401,23 @@ ${code}
       container = await this.docker.createContainer({
         Image: config.dockerImage,
         Cmd: ['-e', wrapper],
-        Tty: true, // merges stdout/stderr, no demux framing to parse
+        Tty: true,
         AttachStdout: true,
         AttachStderr: true,
         OpenStdin: false,
         User: 'node',
         HostConfig: {
           Memory: config.sandboxMemoryMb * 1024 * 1024,
-          MemorySwap: config.sandboxMemoryMb * 1024 * 1024, // == Memory → effectively disables swap
+          MemorySwap: config.sandboxMemoryMb * 1024 * 1024,
           NanoCpus: Math.round(config.sandboxCpuLimit * 1e9),
           PidsLimit: config.sandboxPidsLimit,
           NetworkMode: 'none',
           ReadonlyRootfs: true,
           Tmpfs: { '/tmp': 'rw,size=16m,noexec' },
-          AutoRemove: false, // removed manually, after reading output
+          AutoRemove: false,
         },
       });
 
-      // Attach BEFORE starting, so we don't race the container and miss
-      // early output. This always resolves to a real Node.js stream.
       const attachStream = await container.attach({ stream: true, stdout: true, stderr: true });
       attachStream.on('data', (chunk) => chunks.push(chunk));
 
@@ -310,7 +425,7 @@ ${code}
 
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        container.kill().catch(() => {}); // best-effort; container may already be gone
+        container.kill().catch(() => {});
       }, config.sandboxTimeoutMs);
 
       const waitResult = await container
@@ -319,7 +434,6 @@ ${code}
 
       clearTimeout(timeoutHandle);
 
-      // Brief grace period for the last chunk to flush after exit.
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const output = Buffer.concat(chunks).toString('utf-8');
@@ -357,9 +471,17 @@ ${code}
     }
   }
 
+  // Shared function-name extraction — used both when running code in the
+  // sandbox and when validating a manually edited task from the CLI, so
+  // both paths agree on what counts as a runnable function. (Previously this
+  // only matched `async function`, silently treating any plain `function`
+  // declaration — which is most generated code — as unextractable.)
   extractFunctionName(code) {
-    const match = code.match(/async\s+function\s+(\w+)/);
-    return match ? match[1] : 'unknownFunction';
+    let match = code.match(/async\s+function\s+(\w+)/);
+    if (!match) {
+      match = code.match(/function\s+(\w+)/);
+    }
+    return match ? match[1] : null;
   }
 
   async httpRequest(params) {
@@ -383,13 +505,33 @@ ${code}
     });
   }
 
+  resolveSandboxedPath(userPath) {
+    if (!userPath || typeof userPath !== 'string') {
+      throw new Error('Missing or invalid file path');
+    }
+
+    const resolved = path.resolve(config.fileSandboxRoot, userPath);
+    const relative = path.relative(config.fileSandboxRoot, resolved);
+
+    const escapesRoot = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+
+    if (escapesRoot) {
+      throw new Error(`Path "${userPath}" resolves outside the allowed file sandbox`);
+    }
+
+    return resolved;
+  }
+
   async fileRead(params) {
-    const content = await fs.readFile(params.path, 'utf-8');
+    const safePath = this.resolveSandboxedPath(params.path);
+    const content = await fs.readFile(safePath, 'utf-8');
     return { path: params.path, size: content.length, content: content.slice(0, 1000) };
   }
 
   async fileWrite(params) {
-    await fs.writeFile(params.path, params.content, 'utf-8');
+    const safePath = this.resolveSandboxedPath(params.path);
+    await fs.mkdir(path.dirname(safePath), { recursive: true });
+    await fs.writeFile(safePath, params.content, 'utf-8');
     return { path: params.path, bytesWritten: params.content.length };
   }
 
@@ -406,7 +548,6 @@ ${code}
   }
 
   async emailSend(params) {
-    // Simulated for now
     return {
       status: 'simulated',
       message: `Email would be sent to ${params.to}`,

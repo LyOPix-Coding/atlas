@@ -33,10 +33,6 @@ class TaskRegistry {
     return this.tasks[taskName];
   }
 
-  // `embedding` is optional — a vector (array of numbers) representing the
-  // semantic content of the original request, used for de-duplication. Tasks
-  // registered before this feature existed simply won't have one until
-  // updateTaskEmbedding() backfills it.
   async registerTask(taskName, code, params, description, tags, embedding) {
     this.tasks[taskName] = {
       name: taskName,
@@ -51,13 +47,62 @@ class TaskRegistry {
     logger.info(`Registered new task: ${taskName}`);
   }
 
-  // Lazily backfills an embedding onto an existing task (e.g. one created
-  // before semantic de-dup existed, or where the first embed() call failed).
   async updateTaskEmbedding(taskName, embedding) {
     if (!this.tasks[taskName] || !embedding) return;
     this.tasks[taskName].embedding = embedding;
     await this.saveRegistry();
     logger.debug(`Backfilled embedding for task: ${taskName}`);
+  }
+
+  // Persists a self-repaired version of a task's code (called by
+  // task-executor's executeWithRepair when a repair attempt succeeds).
+  async updateTaskCode(taskName, code) {
+    if (!this.tasks[taskName] || !code) return;
+    this.tasks[taskName].code = code;
+    this.tasks[taskName].repairedAt = new Date().toISOString();
+    await this.saveRegistry();
+    logger.info(`Updated code for task "${taskName}" after self-repair`);
+  }
+
+  // Manual edit of a task's code, description, and/or params (any subset —
+  // pass only the fields you want to change). Used by the CLI's "Edit a
+  // generated task" flow. If the description or the underlying params.input
+  // text changes, the stored embedding is cleared so the next semantic
+  // de-dup check recomputes it fresh instead of comparing against stale text.
+  async editTask(taskName, updates) {
+    const task = this.tasks[taskName];
+    if (!task) {
+      throw new Error(`No such task: ${taskName}`);
+    }
+
+    const newInput = updates.params && updates.params.input;
+    const inputChanged =
+      newInput !== undefined && newInput !== (task.params && task.params.input);
+    const descriptionChanged =
+      updates.description !== undefined && updates.description !== task.description;
+
+    if (updates.code !== undefined) task.code = updates.code;
+    if (updates.description !== undefined) task.description = updates.description;
+    if (updates.params !== undefined) task.params = updates.params;
+
+    if (inputChanged || descriptionChanged) {
+      task.embedding = undefined;
+    }
+
+    task.editedAt = new Date().toISOString();
+
+    await this.saveRegistry();
+    logger.info(`Manually edited task: ${taskName}`);
+    return task;
+  }
+
+  // Removes a single task (as opposed to clearAll(), which nukes everything).
+  async deleteTask(taskName) {
+    if (!(taskName in this.tasks)) return false;
+    delete this.tasks[taskName];
+    await this.saveRegistry();
+    logger.info(`Deleted task: ${taskName}`);
+    return true;
   }
 
   hasTask(taskName) {

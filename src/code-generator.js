@@ -27,7 +27,6 @@ Respond with ONLY the task name, nothing else:`;
 
       const raw = response.message.content.trim();
 
-      // Sanitize: lowercase, replace non-alphanumeric with underscores, collapse repeats
       let name = raw
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '_')
@@ -92,6 +91,66 @@ Write ONLY the function code, nothing else:`;
       return extracted;
     } catch (err) {
       logger.error(`Code generation error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  // Self-repair: given code that threw at runtime and the actual error it
+  // produced, asks the model to fix it. Same extraction/safety pipeline as
+  // generateTaskCode — the caller is expected to run validateCode() on the
+  // result before ever executing it, exactly like a freshly generated task.
+  async repairCode(originalCode, errorMessage, description) {
+    try {
+      const prompt = `The following JavaScript function failed when it was executed:
+
+${originalCode}
+
+Error it produced:
+"${errorMessage}"
+${description ? `\nWhat this function is supposed to do: "${description}"` : ''}
+
+Fix the function so it runs correctly and actually handles the case that caused this error.
+
+Requirements:
+- Keep the same function name and signature — it must accept a single \`params\` object
+- Returns: { success: true, result: VALUE } or { success: false, error: MESSAGE }
+- Use only JavaScript, math, strings, arrays, objects
+- NO require, NO fetch, NO HTTP, NO files, NO spawning, NO eval
+
+Write ONLY the corrected function code, nothing else:`;
+
+      logger.debug(`Requesting self-repair using ${config.ollamaModel}`);
+
+      const response = await this.ollama.chat({
+        model: config.ollamaModel,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const raw = response.message.content.trim();
+
+      logger.debug(`Repair response: ${raw.slice(0, 300)}`);
+
+      let cleaned = raw
+        .replace(/```javascript\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
+
+      let functionMatch = cleaned.match(/(?:async\s+)?function\s+\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
+
+      if (!functionMatch) {
+        functionMatch = cleaned.match(/(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+      }
+
+      if (!functionMatch) {
+        logger.warn(`Failed to extract repaired function. Cleaned response:\n${cleaned}`);
+        throw new Error('Failed to extract valid function from repaired code');
+      }
+
+      const extracted = functionMatch[0];
+      logger.info(`Successfully extracted repaired function: ${extracted.slice(0, 150)}`);
+      return extracted;
+    } catch (err) {
+      logger.error(`Code repair error: ${err.message}`);
       throw err;
     }
   }
