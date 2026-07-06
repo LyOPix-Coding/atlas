@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const fsSync = require('fs');
 const { spawnSync } = require('child_process');
-const ollamaUsage = require('./utils/ollama-usage');
+const aiUsage = require('./utils/ai-usage');
 const savedPrompts = require('./utils/saved-prompts');
 const config = require('./utils/config');
 
@@ -25,7 +25,7 @@ function buildMenu() {
  3) Show tokens left
  4) Show saved prompts
  5) Clear all created programs
- 6) Ollama call history
+ 6) AI call history
  7) Start API server   [${apiStatus}]
  8) Edit a generated task
 ------------------------------
@@ -65,7 +65,7 @@ async function runMenu(inputLayer) {
         await clearCreatedPrograms(inputLayer);
         break;
       case '6':
-        showOllamaHistory();
+        showAiCallHistory();
         break;
       case '7':
         startApiServer(inputLayer);
@@ -172,7 +172,7 @@ function printResult(body) {
 }
 
 function showTokensLeft() {
-  const s = ollamaUsage.getUsageSummary();
+  const s = aiUsage.getUsageSummary();
   console.log('\n--- Token usage ---');
   console.log(`Prompt tokens used:     ${s.promptTokens}`);
   console.log(`Completion tokens used: ${s.completionTokens}`);
@@ -181,7 +181,7 @@ function showTokensLeft() {
     console.log(`Budget:                 ${s.budget}`);
     console.log(`Remaining:              ${s.remaining}`);
   } else {
-    console.log('No token budget configured (set OLLAMA_TOKEN_BUDGET to track remaining tokens).');
+    console.log('No token budget configured (set AI_TOKEN_BUDGET to track remaining tokens).');
   }
   console.log('');
 }
@@ -204,9 +204,9 @@ async function clearCreatedPrograms(inputLayer) {
   console.log('\nAll created programs cleared.\n');
 }
 
-function showOllamaHistory() {
-  const history = ollamaUsage.getHistory(20);
-  console.log('\n--- Ollama call history (most recent first) ---');
+function showAiCallHistory() {
+  const history = aiUsage.getHistory(20);
+  console.log('\n--- AI call history (most recent first) ---');
   if (history.length === 0) {
     console.log('No calls recorded yet.');
   } else {

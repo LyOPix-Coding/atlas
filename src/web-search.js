@@ -1,13 +1,13 @@
-const { Ollama } = require('ollama');
+const { AIProvider } = require('./utils/ai-provider');
 const logger = require('./utils/logger');
 const config = require('./utils/config');
 const { SYSTEM_IDENTITY } = require('./utils/identity');
 
 class WebSearch {
   constructor() {
-    this.ollama = new Ollama({
-      host: config.ollamaHost,
-      headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
+    this.ai = new AIProvider({
+      host: config.aiHost,
+      headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
   }
 
@@ -15,7 +15,7 @@ class WebSearch {
     try {
       logger.debug(`Web search: ${query}`);
 
-      const searchResults = await this.ollama.webSearch({ query });
+      const searchResults = await this.ai.webSearch({ query });
       const results = (searchResults && searchResults.results) || [];
 
       if (results.length === 0) {
@@ -39,8 +39,8 @@ ${resultsBlock}
 
 Using these results, answer the query clearly and concisely, like you're speaking from a TTS. Don't read out URLs. If the results don't actually answer the query, say so.`;
 
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
+      const response = await this.ai.chat({
+        model: config.aiModel,
         messages: [
           { role: 'system', content: SYSTEM_IDENTITY },
           { role: 'user', content: prompt },

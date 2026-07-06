@@ -1,12 +1,12 @@
-const { Ollama } = require('ollama');
+const { AIProvider } = require('./utils/ai-provider');
 const logger = require('./utils/logger');
 const config = require('./utils/config');
 
 class CodeGenerator {
   constructor() {
-    this.ollama = new Ollama({
-      host: config.ollamaHost,
-      headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
+    this.ai = new AIProvider({
+      host: config.aiHost,
+      headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
   }
 
@@ -20,8 +20,8 @@ Respond with ONLY the task name, nothing else:`;
 
       logger.debug(`Generating task name for input: ${input}`);
 
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
+      const response = await this.ai.chat({
+        model: config.aiModel,
         messages: [{ role: 'user', content: prompt }],
       });
 
@@ -59,10 +59,10 @@ Requirements:
 
 Write ONLY the function code, nothing else:`;
 
-      logger.debug(`Generating code for task: ${task} using ${config.ollamaModel}`);
+      logger.debug(`Generating code for task: ${task} using ${config.aiModel}`);
 
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
+      const response = await this.ai.chat({
+        model: config.aiModel,
         messages: [{ role: 'user', content: prompt }],
       });
 
@@ -119,10 +119,10 @@ Requirements:
 
 Write ONLY the corrected function code, nothing else:`;
 
-      logger.debug(`Requesting self-repair using ${config.ollamaModel}`);
+      logger.debug(`Requesting self-repair using ${config.aiModel}`);
 
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
+      const response = await this.ai.chat({
+        model: config.aiModel,
         messages: [{ role: 'user', content: prompt }],
       });
 

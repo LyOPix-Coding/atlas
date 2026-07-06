@@ -1,6 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
-const { Ollama } = require('ollama');
+const { AIProvider } = require('./utils/ai-provider');
 const logger = require('./utils/logger');
 const config = require('./utils/config');
 const { SYSTEM_IDENTITY } = require('./utils/identity');
@@ -12,10 +12,10 @@ const PROJECT_ROOT = path.join(__dirname, '..');
 // IMPORTANT: never add .env or anything containing secrets to this list.
 const FILE_MANIFEST = [
   { path: 'src/index.js', description: 'Server entry point: starts Express, wires up the three layers' },
-  { path: 'src/input-layer.js', description: 'HTTP layer: receives requests, classifies question vs command, calls Ollama for Q&A' },
+  { path: 'src/input-layer.js', description: 'HTTP layer: receives requests, classifies question vs command, calls the AI provider for Q&A' },
   { path: 'src/intent-processor.js', description: 'Classifies command text into a task and params, validates legality, feasibility, and safety' },
   { path: 'src/task-executor.js', description: 'Executes built-in tasks, or generates and runs new code for unknown tasks' },
-  { path: 'src/code-generator.js', description: 'Calls Ollama to name and write JavaScript for unknown tasks, validates the code for dangerous patterns' },
+  { path: 'src/code-generator.js', description: 'Calls the AI provider to name and write JavaScript for unknown tasks, validates the code for dangerous patterns' },
   { path: 'src/task-registry.js', description: 'Persists learned tasks to tasks/generated-tasks.json' },
   { path: 'src/self-awareness.js', description: 'Lets ATLAS read and explain its own source code' },
   { path: 'src/models/intent-classifier.js', description: 'Older simpler pattern-matching classifier' },
@@ -25,7 +25,7 @@ const FILE_MANIFEST = [
   { path: 'README.md', description: 'Project overview, architecture, and usage docs' },
   { path: 'package.json', description: 'Dependencies and npm scripts' },
   { path: 'src/utils/conversation-store.js', description: 'Stores the conversations into a different file' },
-  { path: 'src/utils/ollama-usage.js', description: 'Stores the amount of calls and tokens used into a different file' },
+  { path: 'src/utils/ai-usage.js', description: 'Stores the amount of calls and tokens used into a different file' },
   { path: 'src/utils/saved-prompts.js', description: 'Stores the past prompts into a different file' },
   { path: 'src/cli.js', description: 'Gives a better UX to the user by giving a UI' },
   { path: 'src/web-search.js', description: 'Searches and fetches pages on the web' },
@@ -33,9 +33,9 @@ const FILE_MANIFEST = [
 
 class SelfAwareness {
   constructor() {
-    this.ollama = new Ollama({
-      host: config.ollamaHost,
-      headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
+    this.ai = new AIProvider({
+      host: config.aiHost,
+      headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
   }
 
@@ -107,8 +107,8 @@ User's question: "${question}"
 Answer:`;
 
     try {
-      const response = await this.ollama.chat({
-        model: config.ollamaModel,
+      const response = await this.ai.chat({
+        model: config.aiModel,
         messages: [
           { role: 'system', content: SYSTEM_IDENTITY },
           { role: 'user', content: prompt },

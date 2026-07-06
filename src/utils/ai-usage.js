@@ -4,7 +4,7 @@ const logger = require('./logger');
 const config = require('./config');
 
 const DATA_DIR = path.join(__dirname, '../../data');
-const HISTORY_PATH = path.join(DATA_DIR, 'ollama-history.json');
+const HISTORY_PATH = path.join(DATA_DIR, 'ai-call-history.json');
 const USAGE_PATH = path.join(DATA_DIR, 'token-usage.json');
 const MAX_HISTORY_ENTRIES = 200;
 
@@ -25,13 +25,13 @@ function writeJson(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-class OllamaUsage {
+class AIUsage {
   constructor() {
     this.history = readJson(HISTORY_PATH, []);
     this.usage = readJson(USAGE_PATH, { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
   }
 
-  // Call this right after every raw this.ollama.chat() call.
+  // Call this right after every raw this.ai.chat() call.
   record({ purpose, requestId, model, promptTokens = 0, completionTokens = 0 }) {
     const totalTokens = promptTokens + completionTokens;
 
@@ -56,7 +56,7 @@ class OllamaUsage {
     this.usage.totalTokens += totalTokens;
     writeJson(USAGE_PATH, this.usage);
 
-    logger.debug(`Ollama call [${requestId || 'n/a'}] ${purpose}: ${totalTokens} tokens`);
+    logger.debug(`AI call [${requestId || 'n/a'}] ${purpose}: ${totalTokens} tokens`);
   }
 
   getHistory(limit = 20) {
@@ -64,7 +64,7 @@ class OllamaUsage {
   }
 
   getUsageSummary() {
-    const budget = config.ollamaTokenBudget; // null = no budget configured
+    const budget = config.aiTokenBudget; // null = no budget configured
     const used = this.usage.totalTokens;
 
     return {
@@ -78,4 +78,4 @@ class OllamaUsage {
 }
 
 // Singleton — shared across the process.
-module.exports = new OllamaUsage();
+module.exports = new AIUsage();

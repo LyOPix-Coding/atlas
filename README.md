@@ -8,7 +8,7 @@ The AI Core consists of three main layers:
 
 ### 1. Input Layer
 - Accepts requests via HTTP POST endpoints
-- Distinguishes between simple questions (answered by Ollama LLM) and commands (processed by intent layer)
+- Distinguishes between simple questions (answered by the AI provider) and commands (processed by intent layer)
 - Auto-generates unique `requestId` for tracking
 - Returns both status and results
 
@@ -28,7 +28,7 @@ The AI Core consists of three main layers:
 ## Features
 
 ### Smart Question Answering
-Ask natural language questions—system routes them to Ollama LLM for answers:
+Ask natural language questions—system routes them to the AI provider for answers:
 - "What is the capital of France?"
 - "What is 2+3?"
 - "Tell me about machine learning"
@@ -69,7 +69,7 @@ Response:
 
 ### Prerequisites
 - **Node.js** 14+
-- **Ollama** (for AI capabilities)
+- An AI provider backend (not included — see `src/utils/ai-provider.js`)
 - **Docker** (optional, for Phase 2 sandboxing)
 
 ### Setup
@@ -94,11 +94,8 @@ DOCKER_IMAGE=ai-task-runner:latest
 LOG_LEVEL=debug
 ```
 
-4. Install Ollama models:
-```bash
-ollama pull orca-mini
-ollama pull dolphin-mixtral
-```
+4. Wire up a real AI backend in `src/utils/ai-provider.js` (Ollama has been removed —
+   this file is currently a set of stub methods waiting for a replacement).
 
 5. Start the server:
 ```bash
@@ -193,8 +190,8 @@ Learned tasks are saved to `tasks/generated-tasks.json`:
 ### Code Generation Pipeline
 
 1. **User Input** → Intent Classifier
-2. **Unknown Task Detected** → Task Naming (Ollama generates descriptive name)
-3. **Code Generation** (Ollama/dolphin-mixtral generates JavaScript)
+2. **Unknown Task Detected** → Task Naming (AI provider generates descriptive name)
+3. **Code Generation** (AI provider generates JavaScript)
 4. **Code Validation** (regex patterns check for dangerous operations)
 5. **Execution** (run in isolated Node.js sandbox)
 6. **Persistence** (save to registry for future use)
@@ -257,11 +254,6 @@ ai-core/
 | `DOCKER_IMAGE` | ai-task-runner:latest | Docker image for Phase 2 |
 | `LOG_LEVEL` | debug | Logging level (debug/info/warn/error) |
 
-### Ollama Models
-
-- **orca-mini**: Fast, lightweight model for Q&A (3.3B parameters)
-- **dolphin-mixtral**: Better code generation (8x7B mixture of experts)
-
 ## Logging
 
 All activity is logged with timestamps and request IDs:
@@ -274,7 +266,7 @@ All activity is logged with timestamps and request IDs:
 
 ## Performance
 
-- **Question answering**: ~2-5 seconds (depends on Ollama model)
+- **Question answering**: ~2-5 seconds (depends on the AI provider/model in use)
 - **Task execution**: <100ms for simple operations
 - **Code generation**: ~30-90 seconds (first-time learning)
 - **Learned task execution**: <100ms (registry lookup + execution)

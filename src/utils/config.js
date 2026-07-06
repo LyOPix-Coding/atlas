@@ -6,11 +6,13 @@ module.exports = {
   mlModelPath: process.env.ML_MODEL_PATH || './src/models/intent-classifier.js',
   dockerImage: process.env.DOCKER_IMAGE || 'ai-task-runner:latest',
   logLevel: process.env.LOG_LEVEL || 'info',
-  ollamaHost: process.env.OLLAMA_HOST || 'https://ollama.com',
-  ollamaApiKey: process.env.OLLAMA_API_KEY || '',
-  ollamaModel: process.env.OLLAMA_MODEL || 'gpt-oss:20b-cloud',
-  ollamaEmbedModel: process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text',
-  ollamaEmbedHost: process.env.OLLAMA_EMBED_HOST || 'http://localhost:11434',
+  // AI backend is not wired up yet — see src/utils/ai-provider.js. These
+  // config values are kept as placeholders for whatever backend replaces it.
+  aiHost: process.env.AI_HOST || '',
+  aiApiKey: process.env.AI_API_KEY || '',
+  aiModel: process.env.AI_MODEL || '',
+  aiEmbedModel: process.env.AI_EMBED_MODEL || '',
+  aiEmbedHost: process.env.AI_EMBED_HOST || '',
   taskSimilarityThreshold: process.env.TASK_SIMILARITY_THRESHOLD
     ? parseFloat(process.env.TASK_SIMILARITY_THRESHOLD)
     : 0.85,
@@ -35,7 +37,7 @@ module.exports = {
   maxRepairAttempts: process.env.REPAIR_TRIES_LIMIT
     ? parseInt(process.env.REPAIR_TRIES_LIMIT, 10)
     : 3,
-  ollamaTokenBudget: process.env.OLLAMA_TOKEN_BUDGET
-    ? parseInt(process.env.OLLAMA_TOKEN_BUDGET, 10)
+  aiTokenBudget: process.env.AI_TOKEN_BUDGET
+    ? parseInt(process.env.AI_TOKEN_BUDGET, 10)
     : null,
 };

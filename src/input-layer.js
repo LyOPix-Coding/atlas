@@ -1,10 +1,10 @@
 const logger = require('./utils/logger');
-const { Ollama } = require('ollama');
+const { AIProvider } = require('./utils/ai-provider');
 const { v4: uuidv4 } = require('uuid');
 const config = require('./utils/config');
 const { SYSTEM_IDENTITY } = require('./utils/identity');
 const conversationStore = require('./utils/conversation-store');
-const ollamaUsage = require('./utils/ollama-usage');
+const aiUsage = require('./utils/ai-usage');
 const savedPrompts = require('./utils/saved-prompts');
 
 // Tool schemas the model can choose to call, whether the input was routed
@@ -195,9 +195,9 @@ class InputLayer {
     this.intentProcessor = intentProcessor;
     this.taskExecutor = taskExecutor;
 
-    this.ollama = new Ollama({
-      host: config.ollamaHost,
-      headers: { Authorization: `Bearer ${config.ollamaApiKey}` },
+    this.ai = new AIProvider({
+      host: config.aiHost,
+      headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
 
     // Strong signals that skip the model call entirely (fast path).
@@ -333,11 +333,11 @@ class InputLayer {
       : await this.classifyInput(input, requestId);
 
     if (isSimpleQuestion) {
-      logger.debug(`Routing to Ollama for question: ${input}`);
-      const ollamaResult = await this.askOllama(input, requestId);
+      logger.debug(`Routing to AI provider for question: ${input}`);
+      const aiResult = await this.askAI(input, requestId);
       return {
         httpStatus: 200,
-        body: { status: 'completed', requestId, type: 'question', result: ollamaResult },
+        body: { status: 'completed', requestId, type: 'question', result: aiResult },
       };
     }
 
@@ -424,11 +424,11 @@ class InputLayer {
     return await this.classifyWithModel(input, requestId);
   }
 
-  // Wraps this.ollama.chat() so every call gets logged to the Ollama call
-  // history and its token usage counted toward the tracked total.
-  async callOllama(params, purpose, requestId) {
-    const response = await this.ollama.chat(params);
-    ollamaUsage.record({
+  // Wraps this.ai.chat() so every call gets logged to the AI call history
+  // and its token usage counted toward the tracked total.
+  async callAI(params, purpose, requestId) {
+    const response = await this.ai.chat(params);
+    aiUsage.record({
       purpose,
       requestId,
       model: params.model,
@@ -449,8 +449,8 @@ User input: "${input}"
 
 Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
 
-      const response = await this.callOllama(
-        { model: config.ollamaModel, messages: [{ role: 'user', content: prompt }] },
+      const response = await this.callAI(
+        { model: config.aiModel, messages: [{ role: 'user', content: prompt }] },
         'classify',
         requestId
       );
@@ -498,7 +498,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     return questionKeywords.some((kw) => lowerInput.includes(kw));
   }
 
-  async askOllama(question, requestId) {
+  async askAI(question, requestId) {
     try {
       const existing = conversationStore.get(requestId);
       const isContinuation = !!existing;
@@ -506,7 +506,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       logger.debug(
         isContinuation
           ? `Continuing conversation [${requestId}] (${existing.length} prior messages) with: ${question}`
-          : `Calling Ollama Cloud (${config.ollamaModel}) with: ${question}`
+          : `Calling AI provider (${config.aiModel}) with: ${question}`
       );
 
       const messages = existing || [{ role: 'system', content: SYSTEM_IDENTITY }];
@@ -523,12 +523,12 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       messages.push({ role: 'assistant', content: answer });
       conversationStore.save(requestId, messages);
 
-      logger.debug(`Ollama response: ${answer.slice(0, 100)}...`);
+      logger.debug(`AI response: ${answer.slice(0, 100)}...`);
       return { answer, requestId, toolsUsed };
     } catch (err) {
-      logger.error(`Ollama error: ${err.message}`);
+      logger.error(`AI provider error: ${err.message}`);
       return {
-        answer: `I encountered an error: ${err.message}. Make sure OLLAMA_API_KEY is set correctly.`,
+        answer: `I encountered an error: ${err.message}. The AI provider isn't wired up yet — see src/utils/ai-provider.js.`,
       };
     }
   }
@@ -548,8 +548,8 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       // (via generate_function) is immediately callable on the next turn.
       const tools = this.getToolSchemas();
 
-      const response = await this.callOllama(
-        { model: config.ollamaModel, messages, tools },
+      const response = await this.callAI(
+        { model: config.aiModel, messages, tools },
         'chat',
         requestId
       );
@@ -578,8 +578,8 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     // Hit the iteration cap while the model still wanted to call tools —
     // force one last answer without giving it the option to call more.
     logger.warn(`Tool loop [${requestId}] hit max iterations (${MAX_TOOL_ITERATIONS}), forcing final answer`);
-    const finalResponse = await this.callOllama(
-      { model: config.ollamaModel, messages },
+    const finalResponse = await this.callAI(
+      { model: config.aiModel, messages },
       'chat-forced-final',
       requestId
     );
@@ -593,7 +593,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     try {
       if (name === 'web_search') {
         logger.info(`Tool call [${requestId}]: web_search("${args.query}")`);
-        const results = await this.ollama.webSearch({ query: args.query });
+        const results = await this.ai.webSearch({ query: args.query });
         return (results.results || []).slice(0, 5).map((r) => ({
           title: r.title,
           url: r.url,
@@ -603,7 +603,7 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
 
       if (name === 'web_fetch') {
         logger.info(`Tool call [${requestId}]: web_fetch("${args.url}")`);
-        const result = await this.ollama.webFetch({ url: args.url });
+        const result = await this.ai.webFetch({ url: args.url });
         return {
           title: result.title,
           content: (result.content || '').slice(0, 3000),
