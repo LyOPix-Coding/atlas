@@ -2,7 +2,6 @@ class IntentClassifier {
   classify(input) {
     const lower = input.toLowerCase();
 
-    // Simple pattern matching → task + params
     if (lower.includes('fetch') || lower.includes('http') || lower.includes('get')) {
       return {
         task: 'http_request',

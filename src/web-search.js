@@ -22,7 +22,6 @@ class WebSearch {
         return { success: false, error: 'No web results found for that query' };
       }
 
-      // Cap what we send to the model — search results can be huge.
       const trimmedResults = results.slice(0, 5).map((r) => ({
         title: r.title,
         url: r.url,

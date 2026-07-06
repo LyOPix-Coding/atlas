@@ -219,7 +219,6 @@ function showAiCallHistory() {
   console.log('');
 }
 
-// --- Generated task editing -------------------------------------------
 
 function getEditorCommand() {
   if (process.env.EDITOR) return process.env.EDITOR;
@@ -278,7 +277,7 @@ async function editGeneratedTask(inputLayer, ask) {
     switch (action) {
       case '1':
         await editTaskCode(inputLayer, taskName, task, ask);
-        task = registry.getTask(taskName); // reload in case it was saved
+        task = registry.getTask(taskName);
         break;
 
       case '2': {
@@ -328,9 +327,6 @@ async function editGeneratedTask(inputLayer, ask) {
   }
 }
 
-// Opens the task's code in an external text editor against a temp file,
-// blocks until the editor process exits, then validates and saves the
-// result through the same safety pipeline as freshly generated code.
 async function editTaskCode(inputLayer, taskName, task, ask) {
   const registry = inputLayer.taskExecutor.registry;
   const taskExecutor = inputLayer.taskExecutor;
@@ -358,7 +354,6 @@ async function editTaskCode(inputLayer, taskName, task, ask) {
     try {
       fsSync.unlinkSync(tempFile);
     } catch (_) {
-      // best-effort cleanup
     }
   }
 

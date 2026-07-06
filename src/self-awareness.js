@@ -7,9 +7,6 @@ const { SYSTEM_IDENTITY } = require('./utils/identity');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
 
-// Whitelist of files ATLAS is allowed to read about itself, with short descriptions
-// used to figure out which files are relevant to a given question.
-// IMPORTANT: never add .env or anything containing secrets to this list.
 const FILE_MANIFEST = [
   { path: 'src/index.js', description: 'Server entry point: starts Express, wires up the three layers' },
   { path: 'src/input-layer.js', description: 'HTTP layer: receives requests, classifies question vs command, calls the AI provider for Q&A' },
@@ -39,7 +36,6 @@ class SelfAwareness {
     });
   }
 
-  // Refuse to read anything outside the project root, no matter what path gets passed in.
   resolveSafePath(relativePath) {
     const resolved = path.resolve(PROJECT_ROOT, relativePath);
     const relative = path.relative(PROJECT_ROOT, resolved);
@@ -51,8 +47,6 @@ class SelfAwareness {
     return resolved;
   }
 
-  // Simple keyword-overlap scoring to pick which manifest files are worth reading
-  // for a given question, so we're not sending the whole codebase every time.
   selectRelevantFiles(question) {
     const lower = question.toLowerCase();
     const words = lower.split(/\W+/).filter((w) => w.length > 3);
@@ -66,11 +60,9 @@ class SelfAwareness {
     const matched = scored.filter((e) => e.score > 0).sort((a, b) => b.score - a.score);
 
     if (matched.length > 0) {
-      return matched.slice(0, 4); // cap how much gets read/sent per question
+      return matched.slice(0, 4);
     }
 
-    // Nothing matched — default to the three files that answer most
-    // general "how does this work" questions.
     return FILE_MANIFEST.filter((e) =>
       ['src/index.js', 'src/task-executor.js', 'src/intent-processor.js'].includes(e.path)
     );

@@ -99,12 +99,6 @@ class TaskExecutor {
     return { queryEmbedding, match: null };
   }
 
-  // Runs code in the sandbox with bounded self-repair: on failure, sends the
-  // failing code + actual error back to the model to patch, validates the
-  // patch through the normal safety checks, and retries — up to
-  // config.maxRepairAttempts times. Returns the successful result plus
-  // whichever code version actually worked, so the caller can decide
-  // whether to persist it.
   async executeWithRepair(code, params, taskName, description) {
     let currentCode = code;
     let lastError = null;
@@ -123,7 +117,7 @@ class TaskExecutor {
         lastError = err;
 
         if (attempt === maxAttempts) {
-          break; // out of attempts
+          break;
         }
 
         logger.warn(
@@ -199,8 +193,6 @@ class TaskExecutor {
         queryEmbedding
       );
 
-      // Execute with self-repair — if the first attempt throws, the model
-      // gets a chance to patch it (up to maxRepairAttempts) before giving up.
       const { result, finalCode, repaired, repairAttempts } = await this.executeWithRepair(
         generatedCode,
         params,
@@ -208,8 +200,6 @@ class TaskExecutor {
         rawInput
       );
 
-      // If repair changed the code, persist the working version so a future
-      // direct call to this task uses the fix, not the original broken code.
       if (repaired && finalCode !== generatedCode) {
         await this.registry.updateTaskCode(resolvedName, finalCode);
       }
@@ -265,14 +255,6 @@ class TaskExecutor {
     }
   }
 
-  // Lets the model view or edit a previously generated/learned task directly,
-  // rather than generating a redundant duplicate when the existing one is
-  // just wrong or incomplete. Called with only `taskName`, it's a read —
-  // returns the current code/description/params so the model can inspect
-  // before deciding how to fix it. Called with any of code/description/params
-  // set, it validates and test-executes the new code before saving, so a
-  // bad edit fails fast with a real error instead of silently corrupting a
-  // working tool.
   async editGeneratedTask(taskName, updates = {}) {
     if (!this.registry.hasTask(taskName)) {
       return { success: false, error: `No such task: "${taskName}".` };
@@ -281,7 +263,6 @@ class TaskExecutor {
     const task = this.registry.getTask(taskName);
     const { code: newCode, description: newDescription, params: newParams } = updates;
 
-    // Nothing to change — treat this as a view request.
     if (newCode === undefined && newDescription === undefined && newParams === undefined) {
       return {
         success: true,
@@ -307,8 +288,6 @@ class TaskExecutor {
         };
       }
 
-      // Test-run before saving — catches immediate breakage right away
-      // instead of finding out on the next real call.
       const testParams = newParams !== undefined ? newParams : task.params;
       try {
         var testResult = await this.executeInDocker(newCode, testParams, taskName);
@@ -471,11 +450,6 @@ ${code}
     }
   }
 
-  // Shared function-name extraction — used both when running code in the
-  // sandbox and when validating a manually edited task from the CLI, so
-  // both paths agree on what counts as a runnable function. (Previously this
-  // only matched `async function`, silently treating any plain `function`
-  // declaration — which is most generated code — as unextractable.)
   extractFunctionName(code) {
     let match = code.match(/async\s+function\s+(\w+)/);
     if (!match) {

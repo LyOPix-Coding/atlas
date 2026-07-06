@@ -54,8 +54,6 @@ class TaskRegistry {
     logger.debug(`Backfilled embedding for task: ${taskName}`);
   }
 
-  // Persists a self-repaired version of a task's code (called by
-  // task-executor's executeWithRepair when a repair attempt succeeds).
   async updateTaskCode(taskName, code) {
     if (!this.tasks[taskName] || !code) return;
     this.tasks[taskName].code = code;
@@ -64,11 +62,6 @@ class TaskRegistry {
     logger.info(`Updated code for task "${taskName}" after self-repair`);
   }
 
-  // Manual edit of a task's code, description, and/or params (any subset —
-  // pass only the fields you want to change). Used by the CLI's "Edit a
-  // generated task" flow. If the description or the underlying params.input
-  // text changes, the stored embedding is cleared so the next semantic
-  // de-dup check recomputes it fresh instead of comparing against stale text.
   async editTask(taskName, updates) {
     const task = this.tasks[taskName];
     if (!task) {
@@ -96,7 +89,6 @@ class TaskRegistry {
     return task;
   }
 
-  // Removes a single task (as opposed to clearAll(), which nukes everything).
   async deleteTask(taskName) {
     if (!(taskName in this.tasks)) return false;
     delete this.tasks[taskName];

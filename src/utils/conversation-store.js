@@ -1,9 +1,9 @@
-const MAX_HISTORY_MESSAGES = 20; // includes leading system message
-const CONVERSATION_TTL_MS = 1000 * 60 * 60; // 1 hour of inactivity
+const MAX_HISTORY_MESSAGES = 20;
+const CONVERSATION_TTL_MS = 1000 * 60 * 60;
 
 class ConversationStore {
   constructor() {
-    this.conversations = new Map(); // requestId -> { messages, updatedAt }
+    this.conversations = new Map();
   }
 
   get(requestId) {
@@ -19,7 +19,6 @@ class ConversationStore {
   }
 
   save(requestId, messages) {
-    // Keep the leading system message, trim the rest so history can't grow unbounded.
     const trimmed =
       messages.length > MAX_HISTORY_MESSAGES
         ? [messages[0], ...messages.slice(-(MAX_HISTORY_MESSAGES - 1))]
@@ -33,5 +32,4 @@ class ConversationStore {
   }
 }
 
-// Singleton — shared across the process.
 module.exports = new ConversationStore();

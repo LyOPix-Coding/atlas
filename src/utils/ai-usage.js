@@ -31,13 +31,12 @@ class AIUsage {
     this.usage = readJson(USAGE_PATH, { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
   }
 
-  // Call this right after every raw this.ai.chat() call.
   record({ purpose, requestId, model, promptTokens = 0, completionTokens = 0 }) {
     const totalTokens = promptTokens + completionTokens;
 
     const entry = {
       timestamp: new Date().toISOString(),
-      purpose, // 'classify' | 'chat' | 'code-generation' | etc
+      purpose,
       requestId,
       model,
       promptTokens,
@@ -64,7 +63,7 @@ class AIUsage {
   }
 
   getUsageSummary() {
-    const budget = config.aiTokenBudget; // null = no budget configured
+    const budget = config.aiTokenBudget;
     const used = this.usage.totalTokens;
 
     return {
@@ -77,5 +76,4 @@ class AIUsage {
   }
 }
 
-// Singleton — shared across the process.
 module.exports = new AIUsage();

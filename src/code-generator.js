@@ -95,10 +95,6 @@ Write ONLY the function code, nothing else:`;
     }
   }
 
-  // Self-repair: given code that threw at runtime and the actual error it
-  // produced, asks the model to fix it. Same extraction/safety pipeline as
-  // generateTaskCode — the caller is expected to run validateCode() on the
-  // result before ever executing it, exactly like a freshly generated task.
   async repairCode(originalCode, errorMessage, description) {
     try {
       const prompt = `The following JavaScript function failed when it was executed:

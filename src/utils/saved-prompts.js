@@ -31,7 +31,7 @@ class SavedPrompts {
     this.prompts.push({
       requestId,
       input,
-      isNew, // true = first message of this requestId, false = continuation
+      isNew,
       timestamp: new Date().toISOString(),
     });
 
@@ -46,5 +46,4 @@ class SavedPrompts {
   }
 }
 
-// Singleton — shared across the process.
 module.exports = new SavedPrompts();

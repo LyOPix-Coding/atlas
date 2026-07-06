@@ -6,8 +6,6 @@ module.exports = {
   mlModelPath: process.env.ML_MODEL_PATH || './src/models/intent-classifier.js',
   dockerImage: process.env.DOCKER_IMAGE || 'ai-task-runner:latest',
   logLevel: process.env.LOG_LEVEL || 'info',
-  // AI backend is not wired up yet — see src/utils/ai-provider.js. These
-  // config values are kept as placeholders for whatever backend replaces it.
   aiHost: process.env.AI_HOST || '',
   aiApiKey: process.env.AI_API_KEY || '',
   aiModel: process.env.AI_MODEL || '',
@@ -31,9 +29,6 @@ module.exports = {
   fileSandboxRoot: process.env.FILE_SANDBOX_ROOT
     ? path.resolve(process.env.FILE_SANDBOX_ROOT)
     : path.join(__dirname, '../../data/user-files'),
-  // Max number of self-repair attempts if a learned/generated task throws at
-  // runtime: on failure, the error + code are sent back to the model to
-  // patch, up to this many times, before giving up entirely.
   maxRepairAttempts: process.env.REPAIR_TRIES_LIMIT
     ? parseInt(process.env.REPAIR_TRIES_LIMIT, 10)
     : 3,

@@ -7,9 +7,6 @@ const conversationStore = require('./utils/conversation-store');
 const aiUsage = require('./utils/ai-usage');
 const savedPrompts = require('./utils/saved-prompts');
 
-// Tool schemas the model can choose to call, whether the input was routed
-// down the "question" path or the "command" path. Web tools give it live
-// information; task tools let it actually perform built-in actions.
 const WEB_TOOLS = [
   {
     type: 'function',
@@ -121,9 +118,6 @@ const TASK_TOOLS = [
   },
 ];
 
-// Only for genuinely new capabilities. Once generate_function creates a task,
-// that task gets its own tool schema automatically (see buildDynamicTaskTools)
-// and won't need to go through generate_function again.
 const CODE_TOOLS = [
   {
     type: 'function',
@@ -200,8 +194,6 @@ class InputLayer {
       headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
 
-    // Strong signals that skip the model call entirely (fast path).
-    // Keep these narrow and unambiguous — anything fuzzy should fall through to the classifier.
     this.strongQuestionKeywords = [
       'what is',
       'what\'s',
@@ -234,12 +226,10 @@ class InputLayer {
   }
 
   setupRoutes() {
-    // Health check
     this.app.get('/health', (req, res) => {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
-    // Main input endpoint
     this.app.post('/request', async (req, res) => {
       try {
         const { input, requestId: clientRequestId } = req.body;
@@ -252,9 +242,7 @@ class InputLayer {
     });
   }
 
-  // --- Dynamic tool schema generation -------------------------------------
 
-  // Infers a JSON-schema type from an example value stored in the registry.
   jsonSchemaType(value) {
     if (typeof value === 'number') return 'number';
     if (typeof value === 'boolean') return 'boolean';
@@ -263,8 +251,6 @@ class InputLayer {
     return 'string';
   }
 
-  // Learned tasks are registered with an example `params` object (the params
-  // they were first created with), not a formal schema — so we derive one.
   buildParamSchema(exampleParams) {
     const properties = {};
     const required = [];
@@ -282,14 +268,11 @@ class InputLayer {
     return { type: 'object', properties, required };
   }
 
-  // Turns every task currently in the registry into its own callable tool
-  // schema, so previously self-programmed functions are reusable directly —
-  // no need to route back through generate_function.
   buildDynamicTaskTools() {
     const taskNames = this.taskExecutor.registry.listTasks();
 
     return taskNames
-      .filter((name) => !STATIC_TOOL_NAMES.has(name)) // never shadow a built-in tool
+      .filter((name) => !STATIC_TOOL_NAMES.has(name))
       .map((name) => {
         const task = this.taskExecutor.registry.getTask(name);
         return {
@@ -304,18 +287,13 @@ class InputLayer {
       });
   }
 
-  // Full tool list for a given turn: static tools + whatever has been
-  // learned so far. Rebuilt on every call so a task learned mid-conversation
-  // (or by a prior request) is immediately callable.
   getToolSchemas() {
     return [...STATIC_TOOLS, ...this.buildDynamicTaskTools()];
   }
 
-  // --- Request routing ------------------------------------------------------
 
-  // Core routing logic, shared by the HTTP route and the CLI menu.
   async handleRequest(input, clientRequestId) {
-    const requestId = clientRequestId || uuidv4(); // Auto-generate if not provided
+    const requestId = clientRequestId || uuidv4();
 
     if (!input) {
       return { httpStatus: 400, body: { error: 'Missing "input" field' } };
@@ -323,8 +301,6 @@ class InputLayer {
 
     logger.info(`Received request [${requestId}]: ${input}`);
 
-    // An existing requestId with saved history means the user is continuing
-    // a prior chat — skip reclassification and stay on the question path.
     const isContinuation = !!conversationStore.get(requestId);
     savedPrompts.record(requestId, input, !isContinuation);
 
@@ -341,8 +317,6 @@ class InputLayer {
       };
     }
 
-    // Otherwise, it's a command — still handled by the model via tool-calling,
-    // just with a safety gate up front and a different framing prompt.
     logger.debug(`Routing to command handling for: ${input}`);
     const commandOutcome = await this.handleCommand(input, requestId);
 
@@ -360,9 +334,6 @@ class InputLayer {
     };
   }
 
-  // Command path: safety gate, then let the model pick and call the right
-  // tool itself — built-in, previously learned, or (if nothing fits)
-  // generate_function to create a new one.
   async handleCommand(input, requestId) {
     const safety = this.intentProcessor.checkSafety(input);
     if (!safety.approved) {
@@ -379,8 +350,6 @@ class InputLayer {
 
     const { answer, toolResults, toolsUsed } = await this.runWithTools(messages, requestId);
 
-    // Prefer the result of the last task-like tool the model actually called
-    // (built-in, learned, or generate_function's own execution result).
     const taskCall = [...toolResults]
       .reverse()
       .find((t) => t.name !== 'web_search' && t.name !== 'web_fetch');
@@ -392,40 +361,32 @@ class InputLayer {
       };
     }
 
-    // Model didn't call a task tool — e.g. it decided the request wasn't
-    // actually actionable, or answered conversationally instead.
     return {
       rejected: false,
       result: { success: false, message: answer, toolsUsed },
     };
   }
 
-  // Routing decision: fast-path on unambiguous keyword matches, otherwise ask the model.
   async classifyInput(input, requestId) {
     const lowerInput = input.toLowerCase();
 
     const matchesQuestion = this.strongQuestionKeywords.some((kw) => lowerInput.includes(kw));
     const matchesCommand = this.strongCommandKeywords.some((kw) => lowerInput.includes(kw));
 
-    // Unambiguous question, no conflicting command signal — skip the model call.
     if (matchesQuestion && !matchesCommand) {
       logger.debug(`Fast-path [${requestId}]: QUESTION (keyword match)`);
       return true;
     }
 
-    // Unambiguous command, no conflicting question signal — skip the model call.
     if (matchesCommand && !matchesQuestion) {
       logger.debug(`Fast-path [${requestId}]: COMMAND (keyword match)`);
       return false;
     }
 
-    // Ambiguous (both matched, or neither matched) — defer to the model.
     logger.debug(`Ambiguous input [${requestId}], asking model to classify: ${input}`);
     return await this.classifyWithModel(input, requestId);
   }
 
-  // Wraps this.ai.chat() so every call gets logged to the AI call history
-  // and its token usage counted toward the tracked total.
   async callAI(params, purpose, requestId) {
     const response = await this.ai.chat(params);
     aiUsage.record({
@@ -474,7 +435,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     }
   }
 
-  // Broad keyword check, used only if the model call itself fails (bad key, network error, etc).
   isSimpleQuestionKeywordFallback(input) {
     const lowerInput = input.toLowerCase();
     const questionKeywords = [
@@ -533,19 +493,11 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
     }
   }
 
-  // Runs the chat/tool-call loop: the model can call web_search / web_fetch /
-  // any built-in task tool / any previously learned task tool / generate_function
-  // as many times as it needs (up to MAX_TOOL_ITERATIONS) before giving a final
-  // answer. Returns the final text answer, the raw list of tool calls + results
-  // (for callers that need structured task output), and a flat list of tool
-  // names used (for logging/CLI display).
   async runWithTools(messages, requestId) {
     const toolResults = [];
     const toolsUsed = [];
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      // Rebuilt every iteration so a task learned earlier in this same loop
-      // (via generate_function) is immediately callable on the next turn.
       const tools = this.getToolSchemas();
 
       const response = await this.callAI(
@@ -560,7 +512,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
         return { answer: response.message.content, toolResults, toolsUsed };
       }
 
-      // Model wants to use a tool — record its request, then feed back results.
       messages.push(response.message);
 
       for (const call of toolCalls) {
@@ -575,8 +526,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       }
     }
 
-    // Hit the iteration cap while the model still wanted to call tools —
-    // force one last answer without giving it the option to call more.
     logger.warn(`Tool loop [${requestId}] hit max iterations (${MAX_TOOL_ITERATIONS}), forcing final answer`);
     const finalResponse = await this.callAI(
       { model: config.aiModel, messages },
@@ -617,10 +566,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
           return { success: false, error: 'Missing "description" for generate_function' };
         }
 
-        // Reuses the existing learn-and-execute pipeline (code gen -> validate ->
-        // register in task registry -> sandboxed execution). Once registered,
-        // buildDynamicTaskTools() will pick it up as its own tool on the very
-        // next loop iteration (or the next request entirely).
         const taskParams = { input: args.description, ...(args.params || {}) };
         const result = await this.taskExecutor.execute('unknown', taskParams, requestId);
 
@@ -652,9 +597,6 @@ Respond with exactly one word, either QUESTION or COMMAND. Nothing else.`;
       }
 
       if (TASK_TOOL_NAMES.has(name) || this.taskExecutor.registry.hasTask(name)) {
-        // Covers both built-in tasks (http_request, file_read, ...) and any
-        // previously learned/generated task — task-executor.execute() already
-        // knows how to route each of those correctly.
         logger.info(`Tool call [${requestId}]: ${name}(${JSON.stringify(args)})`);
         return await this.taskExecutor.execute(name, args, requestId);
       }
