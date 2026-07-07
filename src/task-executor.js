@@ -8,7 +8,6 @@ const config = require('./utils/config');
 const TaskRegistry = require('./task-registry');
 const CodeGenerator = require('./code-generator');
 const SelfAwareness = require('./self-awareness');
-const WebSearch = require('./web-search');
 const embeddingsService = require('./utils/embeddings');
 
 class TaskExecutor {
@@ -16,7 +15,6 @@ class TaskExecutor {
     this.registry = new TaskRegistry();
     this.codeGenerator = new CodeGenerator();
     this.selfAwareness = new SelfAwareness();
-    this.webSearch = new WebSearch();
 
     this.docker = new Docker();
     this.imageReady = false;
@@ -39,8 +37,6 @@ class TaskExecutor {
           return await this.emailSend(params);
         case 'self_inspect':
           return await this.selfAwareness.explainSelf(params.question);
-        case 'web_search':
-          return await this.webSearch.searchAndAnswer(params.query);
       }
 
       if (this.registry.hasTask(task)) {
@@ -75,7 +71,7 @@ class TaskExecutor {
       if (!taskEmbedding) {
         const textToEmbed = (task.params && task.params.input) || task.description || name;
         taskEmbedding = await embeddingsService.embed(textToEmbed);
-        if (taskEmbedding && typeof this.registry.updateTaskEmbedding === 'function') {
+        if (taskEmbedding) {
           await this.registry.updateTaskEmbedding(name, taskEmbedding);
         }
       }
@@ -189,7 +185,6 @@ class TaskExecutor {
         generatedCode,
         params,
         `Auto-generated task for: ${resolvedName}`,
-        undefined,
         queryEmbedding
       );
 
@@ -274,6 +269,7 @@ class TaskExecutor {
       };
     }
 
+    let testResult;
     if (newCode !== undefined) {
       const validation = await this.codeGenerator.validateCode(newCode);
       if (!validation.valid) {
@@ -290,7 +286,7 @@ class TaskExecutor {
 
       const testParams = newParams !== undefined ? newParams : task.params;
       try {
-        var testResult = await this.executeInDocker(newCode, testParams, taskName);
+        testResult = await this.executeInDocker(newCode, testParams, taskName);
       } catch (err) {
         return {
           success: false,
@@ -310,7 +306,7 @@ class TaskExecutor {
       taskName,
       description: updatedTask.description,
       params: updatedTask.params,
-      testResult: typeof testResult !== 'undefined' ? testResult.result : undefined,
+      testResult: testResult ? testResult.result : undefined,
     };
   }
 

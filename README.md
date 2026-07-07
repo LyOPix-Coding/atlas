@@ -89,7 +89,6 @@ npm install
 ```bash
 PORT=3000
 HOST=localhost
-ML_MODEL_PATH=./src/models/intent-classifier.js
 DOCKER_IMAGE=ai-task-runner:latest
 LOG_LEVEL=debug
 ```
@@ -215,8 +214,6 @@ ai-core/
 │   ├── task-executor.js         # Task execution & code generation
 │   ├── code-generator.js        # AI code generation
 │   ├── task-registry.js         # Learned task persistence
-│   ├── models/
-│   │   └── intent-classifier.js # Intent classification logic
 │   └── utils/
 │       ├── logger.js            # Logging utility
 │       └── config.js            # Configuration
@@ -250,7 +247,6 @@ ai-core/
 |----------|---------|-------------|
 | `PORT` | 3000 | Server port |
 | `HOST` | localhost | Server host |
-| `ML_MODEL_PATH` | ./src/models/intent-classifier.js | Intent model path |
 | `DOCKER_IMAGE` | ai-task-runner:latest | Docker image for Phase 2 |
 | `LOG_LEVEL` | debug | Logging level (debug/info/warn/error) |
 

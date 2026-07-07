@@ -219,7 +219,6 @@ function showAiCallHistory() {
   console.log('');
 }
 
-
 function getEditorCommand() {
   if (process.env.EDITOR) return process.env.EDITOR;
   return process.platform === 'win32' ? 'notepad' : 'nano';

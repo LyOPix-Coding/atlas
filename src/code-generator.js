@@ -2,12 +2,38 @@ const { AIProvider } = require('./utils/ai-provider');
 const logger = require('./utils/logger');
 const config = require('./utils/config');
 
+function extractFunctionCode(raw, preferredPattern) {
+  const cleaned = raw
+    .replace(/```javascript\n?/g, '')
+    .replace(/```\n?/g, '')
+    .trim();
+
+  const match =
+    (preferredPattern && cleaned.match(preferredPattern)) ||
+    cleaned.match(/(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+
+  if (!match) {
+    logger.warn(`Failed to extract function. Cleaned response:\n${cleaned}`);
+    throw new Error('Failed to extract valid function from generated code');
+  }
+
+  return match[0];
+}
+
 class CodeGenerator {
   constructor() {
     this.ai = new AIProvider({
       host: config.aiHost,
       headers: { Authorization: `Bearer ${config.aiApiKey}` },
     });
+  }
+
+  async chatForCode(prompt) {
+    const response = await this.ai.chat({
+      model: config.aiModel,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    return response.message.content.trim();
   }
 
   async generateTaskName(input) {
@@ -20,12 +46,7 @@ Respond with ONLY the task name, nothing else:`;
 
       logger.debug(`Generating task name for input: ${input}`);
 
-      const response = await this.ai.chat({
-        model: config.aiModel,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const raw = response.message.content.trim();
+      const raw = await this.chatForCode(prompt);
 
       let name = raw
         .toLowerCase()
@@ -61,32 +82,10 @@ Write ONLY the function code, nothing else:`;
 
       logger.debug(`Generating code for task: ${task} using ${config.aiModel}`);
 
-      const response = await this.ai.chat({
-        model: config.aiModel,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const raw = response.message.content.trim();
-
+      const raw = await this.chatForCode(prompt);
       logger.debug(`Generated code response: ${raw.slice(0, 300)}`);
 
-      let cleaned = raw
-        .replace(/```javascript\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-
-      let functionMatch = cleaned.match(/(?:async\s+)?function\s+execute_\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
-
-      if (!functionMatch) {
-        functionMatch = cleaned.match(/(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
-      }
-
-      if (!functionMatch) {
-        logger.warn(`Failed to extract function. Cleaned response:\n${cleaned}`);
-        throw new Error('Failed to extract valid function from generated code');
-      }
-
-      const extracted = functionMatch[0];
+      const extracted = extractFunctionCode(raw, /(?:async\s+)?function\s+execute_\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
       logger.info(`Successfully extracted function: ${extracted.slice(0, 150)}`);
       return extracted;
     } catch (err) {
@@ -117,32 +116,10 @@ Write ONLY the corrected function code, nothing else:`;
 
       logger.debug(`Requesting self-repair using ${config.aiModel}`);
 
-      const response = await this.ai.chat({
-        model: config.aiModel,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const raw = response.message.content.trim();
-
+      const raw = await this.chatForCode(prompt);
       logger.debug(`Repair response: ${raw.slice(0, 300)}`);
 
-      let cleaned = raw
-        .replace(/```javascript\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-
-      let functionMatch = cleaned.match(/(?:async\s+)?function\s+\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
-
-      if (!functionMatch) {
-        functionMatch = cleaned.match(/(?:async\s+)?function\s+\w+\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
-      }
-
-      if (!functionMatch) {
-        logger.warn(`Failed to extract repaired function. Cleaned response:\n${cleaned}`);
-        throw new Error('Failed to extract valid function from repaired code');
-      }
-
-      const extracted = functionMatch[0];
+      const extracted = extractFunctionCode(raw, /(?:async\s+)?function\s+\w+\s*\(params\)\s*\{[\s\S]*?\n\}/);
       logger.info(`Successfully extracted repaired function: ${extracted.slice(0, 150)}`);
       return extracted;
     } catch (err) {

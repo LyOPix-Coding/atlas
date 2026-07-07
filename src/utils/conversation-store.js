@@ -26,10 +26,6 @@ class ConversationStore {
 
     this.conversations.set(requestId, { messages: trimmed, updatedAt: Date.now() });
   }
-
-  clear(requestId) {
-    this.conversations.delete(requestId);
-  }
 }
 
 module.exports = new ConversationStore();

@@ -15,7 +15,6 @@ const FILE_MANIFEST = [
   { path: 'src/code-generator.js', description: 'Calls the AI provider to name and write JavaScript for unknown tasks, validates the code for dangerous patterns' },
   { path: 'src/task-registry.js', description: 'Persists learned tasks to tasks/generated-tasks.json' },
   { path: 'src/self-awareness.js', description: 'Lets ATLAS read and explain its own source code' },
-  { path: 'src/models/intent-classifier.js', description: 'Older simpler pattern-matching classifier' },
   { path: 'src/utils/config.js', description: 'Reads environment variables into a config object' },
   { path: 'src/utils/logger.js', description: 'Console logging helper with levels' },
   { path: 'src/utils/identity.js', description: 'Defines the ATLAS system identity used in prompts' },
@@ -25,7 +24,6 @@ const FILE_MANIFEST = [
   { path: 'src/utils/ai-usage.js', description: 'Stores the amount of calls and tokens used into a different file' },
   { path: 'src/utils/saved-prompts.js', description: 'Stores the past prompts into a different file' },
   { path: 'src/cli.js', description: 'Gives a better UX to the user by giving a UI' },
-  { path: 'src/web-search.js', description: 'Searches and fetches pages on the web' },
 ];
 
 class SelfAwareness {

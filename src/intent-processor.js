@@ -1,5 +1,12 @@
 const logger = require('./utils/logger');
 
+const BLOCKED_KEYWORDS = [
+  { words: ['delete all', 'delete_all', 'rm -rf'], reason: 'Destructive operation blocked' },
+  { words: ['format', 'wipe', 'destroy'], reason: 'Destructive operation blocked' },
+  { words: ['hack', 'crack', 'exploit'], reason: 'Malicious operation blocked' },
+  { words: ['spam', 'phish', 'malware'], reason: 'Malicious operation blocked' },
+];
+
 class IntentProcessor {
   checkSafety(input) {
     if (!input || typeof input !== 'string') {
@@ -9,21 +16,10 @@ class IntentProcessor {
     logger.debug(`Safety check: ${input}`);
 
     const lower = input.toLowerCase();
+    const blocked = BLOCKED_KEYWORDS.find(({ words }) => words.some((w) => lower.includes(w)));
 
-    if (lower.includes('delete all') || lower.includes('delete_all') || lower.includes('rm -rf')) {
-      return { approved: false, reason: 'Destructive operation blocked' };
-    }
-
-    if (lower.includes('format') || lower.includes('wipe') || lower.includes('destroy')) {
-      return { approved: false, reason: 'Destructive operation blocked' };
-    }
-
-    if (lower.includes('hack') || lower.includes('crack') || lower.includes('exploit')) {
-      return { approved: false, reason: 'Malicious operation blocked' };
-    }
-
-    if (lower.includes('spam') || lower.includes('phish') || lower.includes('malware')) {
-      return { approved: false, reason: 'Malicious operation blocked' };
+    if (blocked) {
+      return { approved: false, reason: blocked.reason };
     }
 
     return { approved: true, reason: 'Operation allowed' };

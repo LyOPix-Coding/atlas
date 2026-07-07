@@ -242,7 +242,6 @@ class InputLayer {
     });
   }
 
-
   jsonSchemaType(value) {
     if (typeof value === 'number') return 'number';
     if (typeof value === 'boolean') return 'boolean';
@@ -290,7 +289,6 @@ class InputLayer {
   getToolSchemas() {
     return [...STATIC_TOOLS, ...this.buildDynamicTaskTools()];
   }
-
 
   async handleRequest(input, clientRequestId) {
     const requestId = clientRequestId || uuidv4();
